@@ -26,7 +26,7 @@
 #define QEMU_CAPS_LOCK_LED   (1 << 2)
 
 /* in ms */
-#define GUI_REFRESH_INTERVAL_DEFAULT    30
+#define GUI_REFRESH_INTERVAL_DEFAULT    16
 #define GUI_REFRESH_INTERVAL_IDLE     3000
 
 /* Color number is match to standard vga palette */
