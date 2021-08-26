@@ -42,7 +42,16 @@
 #define H2(x)   (x)
 #define H4(x)   (x)
 #endif
+/*
+ * Access to 64-bit elements isn't host-endian dependent; we provide H8
+ * and H1_8 so that when a function is being generated from a macro we
+ * can pass these rather than an empty macro argument, for clarity.
+ */
+#define H8(x)   (x)
+#define H1_8(x) (x)
 
+/* Data for expanding active predicate bits to bytes, for byte elements. */
+extern const uint64_t expand_pred_b_data[256];
 
 static inline void clear_tail(void *vd, uintptr_t opr_sz, uintptr_t max_sz)
 {
@@ -196,5 +205,16 @@ int8_t do_sqrdmlah_b(int8_t, int8_t, int8_t, bool, bool);
 int16_t do_sqrdmlah_h(int16_t, int16_t, int16_t, bool, bool, uint32_t *);
 int32_t do_sqrdmlah_s(int32_t, int32_t, int32_t, bool, bool, uint32_t *);
 int64_t do_sqrdmlah_d(int64_t, int64_t, int64_t, bool, bool);
+
+/*
+ * 8 x 8 -> 16 vector polynomial multiply where the inputs are
+ * in the low 8 bits of each 16-bit element
+*/
+uint64_t pmull_h(uint64_t op1, uint64_t op2);
+/*
+ * 16 x 16 -> 32 vector polynomial multiply where the inputs are
+ * in the low 16 bits of each 32-bit element
+ */
+uint64_t pmull_w(uint64_t op1, uint64_t op2);
 
 #endif /* TARGET_ARM_VEC_INTERNALS_H */
