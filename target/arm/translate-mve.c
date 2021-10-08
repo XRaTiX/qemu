@@ -49,6 +49,7 @@ typedef void MVEGenCmpFn(TCGv_ptr, TCGv_ptr, TCGv_ptr);
 typedef void MVEGenScalarCmpFn(TCGv_ptr, TCGv_ptr, TCGv_i32);
 typedef void MVEGenVABAVFn(TCGv_i32, TCGv_ptr, TCGv_ptr, TCGv_ptr, TCGv_i32);
 typedef void MVEGenDualAccOpFn(TCGv_i32, TCGv_ptr, TCGv_ptr, TCGv_ptr, TCGv_i32);
+typedef void MVEGenVCVTRmodeFn(TCGv_ptr, TCGv_ptr, TCGv_ptr, TCGv_i32);
 
 /* Return the offset of a Qn register (same semantics as aa32_vfp_qreg()) */
 static inline long mve_qreg_offset(unsigned reg)
@@ -61,6 +62,16 @@ static TCGv_ptr mve_qreg_ptr(unsigned reg)
     TCGv_ptr ret = tcg_temp_new_ptr();
     tcg_gen_addi_ptr(ret, cpu_env, mve_qreg_offset(reg));
     return ret;
+}
+
+static bool mve_no_predication(DisasContext *s)
+{
+    /*
+     * Return true if we are executing the entire MVE instruction
+     * with no predication or partial-execution, and so we can safely
+     * use an inline TCG vector implementation.
+     */
+    return s->eci == 0 && s->mve_no_pred;
 }
 
 static bool mve_check_qreg_bank(DisasContext *s, int qmask)
@@ -489,17 +500,22 @@ static bool trans_VDUP(DisasContext *s, arg_VDUP *a)
         return true;
     }
 
-    qd = mve_qreg_ptr(a->qd);
     rt = load_reg(s, a->rt);
-    tcg_gen_dup_i32(a->size, rt, rt);
-    gen_helper_mve_vdup(cpu_env, qd, rt);
-    tcg_temp_free_ptr(qd);
+    if (mve_no_predication(s)) {
+        tcg_gen_gvec_dup_i32(a->size, mve_qreg_offset(a->qd), 16, 16, rt);
+    } else {
+        qd = mve_qreg_ptr(a->qd);
+        tcg_gen_dup_i32(a->size, rt, rt);
+        gen_helper_mve_vdup(cpu_env, qd, rt);
+        tcg_temp_free_ptr(qd);
+    }
     tcg_temp_free_i32(rt);
     mve_update_eci(s);
     return true;
 }
 
-static bool do_1op(DisasContext *s, arg_1op *a, MVEGenOneOpFn fn)
+static bool do_1op_vec(DisasContext *s, arg_1op *a, MVEGenOneOpFn fn,
+                       GVecGen2Fn vecfn)
 {
     TCGv_ptr qd, qm;
 
@@ -513,16 +529,25 @@ static bool do_1op(DisasContext *s, arg_1op *a, MVEGenOneOpFn fn)
         return true;
     }
 
-    qd = mve_qreg_ptr(a->qd);
-    qm = mve_qreg_ptr(a->qm);
-    fn(cpu_env, qd, qm);
-    tcg_temp_free_ptr(qd);
-    tcg_temp_free_ptr(qm);
+    if (vecfn && mve_no_predication(s)) {
+        vecfn(a->size, mve_qreg_offset(a->qd), mve_qreg_offset(a->qm), 16, 16);
+    } else {
+        qd = mve_qreg_ptr(a->qd);
+        qm = mve_qreg_ptr(a->qm);
+        fn(cpu_env, qd, qm);
+        tcg_temp_free_ptr(qd);
+        tcg_temp_free_ptr(qm);
+    }
     mve_update_eci(s);
     return true;
 }
 
-#define DO_1OP(INSN, FN)                                        \
+static bool do_1op(DisasContext *s, arg_1op *a, MVEGenOneOpFn fn)
+{
+    return do_1op_vec(s, a, fn, NULL);
+}
+
+#define DO_1OP_VEC(INSN, FN, VECFN)                             \
     static bool trans_##INSN(DisasContext *s, arg_1op *a)       \
     {                                                           \
         static MVEGenOneOpFn * const fns[] = {                  \
@@ -531,17 +556,161 @@ static bool do_1op(DisasContext *s, arg_1op *a, MVEGenOneOpFn fn)
             gen_helper_mve_##FN##w,                             \
             NULL,                                               \
         };                                                      \
-        return do_1op(s, a, fns[a->size]);                      \
+        return do_1op_vec(s, a, fns[a->size], VECFN);           \
     }
+
+#define DO_1OP(INSN, FN) DO_1OP_VEC(INSN, FN, NULL)
 
 DO_1OP(VCLZ, vclz)
 DO_1OP(VCLS, vcls)
-DO_1OP(VABS, vabs)
-DO_1OP(VNEG, vneg)
+DO_1OP_VEC(VABS, vabs, tcg_gen_gvec_abs)
+DO_1OP_VEC(VNEG, vneg, tcg_gen_gvec_neg)
 DO_1OP(VQABS, vqabs)
 DO_1OP(VQNEG, vqneg)
 DO_1OP(VMAXA, vmaxa)
 DO_1OP(VMINA, vmina)
+
+/*
+ * For simple float/int conversions we use the fixed-point
+ * conversion helpers with a zero shift count
+ */
+#define DO_VCVT(INSN, HFN, SFN)                                         \
+    static void gen_##INSN##h(TCGv_ptr env, TCGv_ptr qd, TCGv_ptr qm)   \
+    {                                                                   \
+        gen_helper_mve_##HFN(env, qd, qm, tcg_constant_i32(0));         \
+    }                                                                   \
+    static void gen_##INSN##s(TCGv_ptr env, TCGv_ptr qd, TCGv_ptr qm)   \
+    {                                                                   \
+        gen_helper_mve_##SFN(env, qd, qm, tcg_constant_i32(0));         \
+    }                                                                   \
+    static bool trans_##INSN(DisasContext *s, arg_1op *a)               \
+    {                                                                   \
+        static MVEGenOneOpFn * const fns[] = {                          \
+            NULL,                                                       \
+            gen_##INSN##h,                                              \
+            gen_##INSN##s,                                              \
+            NULL,                                                       \
+        };                                                              \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                         \
+            return false;                                               \
+        }                                                               \
+        return do_1op(s, a, fns[a->size]);                              \
+    }
+
+DO_VCVT(VCVT_SF, vcvt_sh, vcvt_sf)
+DO_VCVT(VCVT_UF, vcvt_uh, vcvt_uf)
+DO_VCVT(VCVT_FS, vcvt_hs, vcvt_fs)
+DO_VCVT(VCVT_FU, vcvt_hu, vcvt_fu)
+
+static bool do_vcvt_rmode(DisasContext *s, arg_1op *a,
+                          enum arm_fprounding rmode, bool u)
+{
+    /*
+     * Handle VCVT fp to int with specified rounding mode.
+     * This is a 1op fn but we must pass the rounding mode as
+     * an immediate to the helper.
+     */
+    TCGv_ptr qd, qm;
+    static MVEGenVCVTRmodeFn * const fns[4][2] = {
+        { NULL, NULL },
+        { gen_helper_mve_vcvt_rm_sh, gen_helper_mve_vcvt_rm_uh },
+        { gen_helper_mve_vcvt_rm_ss, gen_helper_mve_vcvt_rm_us },
+        { NULL, NULL },
+    };
+    MVEGenVCVTRmodeFn *fn = fns[a->size][u];
+
+    if (!dc_isar_feature(aa32_mve_fp, s) ||
+        !mve_check_qreg_bank(s, a->qd | a->qm) ||
+        !fn) {
+        return false;
+    }
+
+    if (!mve_eci_check(s) || !vfp_access_check(s)) {
+        return true;
+    }
+
+    qd = mve_qreg_ptr(a->qd);
+    qm = mve_qreg_ptr(a->qm);
+    fn(cpu_env, qd, qm, tcg_constant_i32(arm_rmode_to_sf(rmode)));
+    tcg_temp_free_ptr(qd);
+    tcg_temp_free_ptr(qm);
+    mve_update_eci(s);
+    return true;
+}
+
+#define DO_VCVT_RMODE(INSN, RMODE, U)                           \
+    static bool trans_##INSN(DisasContext *s, arg_1op *a)       \
+    {                                                           \
+        return do_vcvt_rmode(s, a, RMODE, U);                   \
+    }                                                           \
+
+DO_VCVT_RMODE(VCVTAS, FPROUNDING_TIEAWAY, false)
+DO_VCVT_RMODE(VCVTAU, FPROUNDING_TIEAWAY, true)
+DO_VCVT_RMODE(VCVTNS, FPROUNDING_TIEEVEN, false)
+DO_VCVT_RMODE(VCVTNU, FPROUNDING_TIEEVEN, true)
+DO_VCVT_RMODE(VCVTPS, FPROUNDING_POSINF, false)
+DO_VCVT_RMODE(VCVTPU, FPROUNDING_POSINF, true)
+DO_VCVT_RMODE(VCVTMS, FPROUNDING_NEGINF, false)
+DO_VCVT_RMODE(VCVTMU, FPROUNDING_NEGINF, true)
+
+#define DO_VCVT_SH(INSN, FN)                                    \
+    static bool trans_##INSN(DisasContext *s, arg_1op *a)       \
+    {                                                           \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                 \
+            return false;                                       \
+        }                                                       \
+        return do_1op(s, a, gen_helper_mve_##FN);               \
+    }                                                           \
+
+DO_VCVT_SH(VCVTB_SH, vcvtb_sh)
+DO_VCVT_SH(VCVTT_SH, vcvtt_sh)
+DO_VCVT_SH(VCVTB_HS, vcvtb_hs)
+DO_VCVT_SH(VCVTT_HS, vcvtt_hs)
+
+#define DO_VRINT(INSN, RMODE)                                           \
+    static void gen_##INSN##h(TCGv_ptr env, TCGv_ptr qd, TCGv_ptr qm)   \
+    {                                                                   \
+        gen_helper_mve_vrint_rm_h(env, qd, qm,                          \
+                                  tcg_constant_i32(arm_rmode_to_sf(RMODE))); \
+    }                                                                   \
+    static void gen_##INSN##s(TCGv_ptr env, TCGv_ptr qd, TCGv_ptr qm)   \
+    {                                                                   \
+        gen_helper_mve_vrint_rm_s(env, qd, qm,                          \
+                                  tcg_constant_i32(arm_rmode_to_sf(RMODE))); \
+    }                                                                   \
+    static bool trans_##INSN(DisasContext *s, arg_1op *a)               \
+    {                                                                   \
+        static MVEGenOneOpFn * const fns[] = {                          \
+            NULL,                                                       \
+            gen_##INSN##h,                                              \
+            gen_##INSN##s,                                              \
+            NULL,                                                       \
+        };                                                              \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                         \
+            return false;                                               \
+        }                                                               \
+        return do_1op(s, a, fns[a->size]);                              \
+    }
+
+DO_VRINT(VRINTN, FPROUNDING_TIEEVEN)
+DO_VRINT(VRINTA, FPROUNDING_TIEAWAY)
+DO_VRINT(VRINTZ, FPROUNDING_ZERO)
+DO_VRINT(VRINTM, FPROUNDING_NEGINF)
+DO_VRINT(VRINTP, FPROUNDING_POSINF)
+
+static bool trans_VRINTX(DisasContext *s, arg_1op *a)
+{
+    static MVEGenOneOpFn * const fns[] = {
+        NULL,
+        gen_helper_mve_vrintx_h,
+        gen_helper_mve_vrintx_s,
+        NULL,
+    };
+    if (!dc_isar_feature(aa32_mve_fp, s)) {
+        return false;
+    }
+    return do_1op(s, a, fns[a->size]);
+}
 
 /* Narrowing moves: only size 0 and 1 are valid */
 #define DO_VMOVN(INSN, FN) \
@@ -600,7 +769,7 @@ static bool trans_VREV64(DisasContext *s, arg_1op *a)
 
 static bool trans_VMVN(DisasContext *s, arg_1op *a)
 {
-    return do_1op(s, a, gen_helper_mve_vmvn);
+    return do_1op_vec(s, a, gen_helper_mve_vmvn, tcg_gen_gvec_not);
 }
 
 static bool trans_VABS_fp(DisasContext *s, arg_1op *a)
@@ -631,7 +800,8 @@ static bool trans_VNEG_fp(DisasContext *s, arg_1op *a)
     return do_1op(s, a, fns[a->size]);
 }
 
-static bool do_2op(DisasContext *s, arg_2op *a, MVEGenTwoOpFn fn)
+static bool do_2op_vec(DisasContext *s, arg_2op *a, MVEGenTwoOpFn fn,
+                       GVecGen3Fn *vecfn)
 {
     TCGv_ptr qd, qn, qm;
 
@@ -644,32 +814,47 @@ static bool do_2op(DisasContext *s, arg_2op *a, MVEGenTwoOpFn fn)
         return true;
     }
 
-    qd = mve_qreg_ptr(a->qd);
-    qn = mve_qreg_ptr(a->qn);
-    qm = mve_qreg_ptr(a->qm);
-    fn(cpu_env, qd, qn, qm);
-    tcg_temp_free_ptr(qd);
-    tcg_temp_free_ptr(qn);
-    tcg_temp_free_ptr(qm);
+    if (vecfn && mve_no_predication(s)) {
+        vecfn(a->size, mve_qreg_offset(a->qd), mve_qreg_offset(a->qn),
+              mve_qreg_offset(a->qm), 16, 16);
+    } else {
+        qd = mve_qreg_ptr(a->qd);
+        qn = mve_qreg_ptr(a->qn);
+        qm = mve_qreg_ptr(a->qm);
+        fn(cpu_env, qd, qn, qm);
+        tcg_temp_free_ptr(qd);
+        tcg_temp_free_ptr(qn);
+        tcg_temp_free_ptr(qm);
+    }
     mve_update_eci(s);
     return true;
 }
 
-#define DO_LOGIC(INSN, HELPER)                                  \
+static bool do_2op(DisasContext *s, arg_2op *a, MVEGenTwoOpFn *fn)
+{
+    return do_2op_vec(s, a, fn, NULL);
+}
+
+#define DO_LOGIC(INSN, HELPER, VECFN)                           \
     static bool trans_##INSN(DisasContext *s, arg_2op *a)       \
     {                                                           \
-        return do_2op(s, a, HELPER);                            \
+        return do_2op_vec(s, a, HELPER, VECFN);                 \
     }
 
-DO_LOGIC(VAND, gen_helper_mve_vand)
-DO_LOGIC(VBIC, gen_helper_mve_vbic)
-DO_LOGIC(VORR, gen_helper_mve_vorr)
-DO_LOGIC(VORN, gen_helper_mve_vorn)
-DO_LOGIC(VEOR, gen_helper_mve_veor)
+DO_LOGIC(VAND, gen_helper_mve_vand, tcg_gen_gvec_and)
+DO_LOGIC(VBIC, gen_helper_mve_vbic, tcg_gen_gvec_andc)
+DO_LOGIC(VORR, gen_helper_mve_vorr, tcg_gen_gvec_or)
+DO_LOGIC(VORN, gen_helper_mve_vorn, tcg_gen_gvec_orc)
+DO_LOGIC(VEOR, gen_helper_mve_veor, tcg_gen_gvec_xor)
 
-DO_LOGIC(VPSEL, gen_helper_mve_vpsel)
+static bool trans_VPSEL(DisasContext *s, arg_2op *a)
+{
+    /* This insn updates predication bits */
+    s->base.is_jmp = DISAS_UPDATE_NOCHAIN;
+    return do_2op(s, a, gen_helper_mve_vpsel);
+}
 
-#define DO_2OP(INSN, FN) \
+#define DO_2OP_VEC(INSN, FN, VECFN)                             \
     static bool trans_##INSN(DisasContext *s, arg_2op *a)       \
     {                                                           \
         static MVEGenTwoOpFn * const fns[] = {                  \
@@ -678,20 +863,22 @@ DO_LOGIC(VPSEL, gen_helper_mve_vpsel)
             gen_helper_mve_##FN##w,                             \
             NULL,                                               \
         };                                                      \
-        return do_2op(s, a, fns[a->size]);                      \
+        return do_2op_vec(s, a, fns[a->size], VECFN);           \
     }
 
-DO_2OP(VADD, vadd)
-DO_2OP(VSUB, vsub)
-DO_2OP(VMUL, vmul)
+#define DO_2OP(INSN, FN) DO_2OP_VEC(INSN, FN, NULL)
+
+DO_2OP_VEC(VADD, vadd, tcg_gen_gvec_add)
+DO_2OP_VEC(VSUB, vsub, tcg_gen_gvec_sub)
+DO_2OP_VEC(VMUL, vmul, tcg_gen_gvec_mul)
 DO_2OP(VMULH_S, vmulhs)
 DO_2OP(VMULH_U, vmulhu)
 DO_2OP(VRMULH_S, vrmulhs)
 DO_2OP(VRMULH_U, vrmulhu)
-DO_2OP(VMAX_S, vmaxs)
-DO_2OP(VMAX_U, vmaxu)
-DO_2OP(VMIN_S, vmins)
-DO_2OP(VMIN_U, vminu)
+DO_2OP_VEC(VMAX_S, vmaxs, tcg_gen_gvec_smax)
+DO_2OP_VEC(VMAX_U, vmaxu, tcg_gen_gvec_umax)
+DO_2OP_VEC(VMIN_S, vmins, tcg_gen_gvec_smin)
+DO_2OP_VEC(VMIN_U, vminu, tcg_gen_gvec_umin)
 DO_2OP(VABD_S, vabds)
 DO_2OP(VABD_U, vabdu)
 DO_2OP(VHADD_S, vhadds)
@@ -831,6 +1018,42 @@ static bool trans_VSBCI(DisasContext *s, arg_2op *a)
     return do_2op(s, a, gen_helper_mve_vsbci);
 }
 
+#define DO_2OP_FP(INSN, FN)                                     \
+    static bool trans_##INSN(DisasContext *s, arg_2op *a)       \
+    {                                                           \
+        static MVEGenTwoOpFn * const fns[] = {                  \
+            NULL,                                               \
+            gen_helper_mve_##FN##h,                             \
+            gen_helper_mve_##FN##s,                             \
+            NULL,                                               \
+        };                                                      \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                 \
+            return false;                                       \
+        }                                                       \
+        return do_2op(s, a, fns[a->size]);                      \
+    }
+
+DO_2OP_FP(VADD_fp, vfadd)
+DO_2OP_FP(VSUB_fp, vfsub)
+DO_2OP_FP(VMUL_fp, vfmul)
+DO_2OP_FP(VABD_fp, vfabd)
+DO_2OP_FP(VMAXNM, vmaxnm)
+DO_2OP_FP(VMINNM, vminnm)
+DO_2OP_FP(VCADD90_fp, vfcadd90)
+DO_2OP_FP(VCADD270_fp, vfcadd270)
+DO_2OP_FP(VFMA, vfma)
+DO_2OP_FP(VFMS, vfms)
+DO_2OP_FP(VCMUL0, vcmul0)
+DO_2OP_FP(VCMUL90, vcmul90)
+DO_2OP_FP(VCMUL180, vcmul180)
+DO_2OP_FP(VCMUL270, vcmul270)
+DO_2OP_FP(VCMLA0, vcmla0)
+DO_2OP_FP(VCMLA90, vcmla90)
+DO_2OP_FP(VCMLA180, vcmla180)
+DO_2OP_FP(VCMLA270, vcmla270)
+DO_2OP_FP(VMAXNMA, vmaxnma)
+DO_2OP_FP(VMINNMA, vminnma)
+
 static bool do_2op_scalar(DisasContext *s, arg_2scalar *a,
                           MVEGenTwoOpScalarFn fn)
 {
@@ -861,7 +1084,7 @@ static bool do_2op_scalar(DisasContext *s, arg_2scalar *a,
     return true;
 }
 
-#define DO_2OP_SCALAR(INSN, FN) \
+#define DO_2OP_SCALAR(INSN, FN)                                 \
     static bool trans_##INSN(DisasContext *s, arg_2scalar *a)   \
     {                                                           \
         static MVEGenTwoOpScalarFn * const fns[] = {            \
@@ -923,6 +1146,28 @@ static bool trans_VQDMULLT_scalar(DisasContext *s, arg_2scalar *a)
     }
     return do_2op_scalar(s, a, fns[a->size]);
 }
+
+
+#define DO_2OP_FP_SCALAR(INSN, FN)                              \
+    static bool trans_##INSN(DisasContext *s, arg_2scalar *a)   \
+    {                                                           \
+        static MVEGenTwoOpScalarFn * const fns[] = {            \
+            NULL,                                               \
+            gen_helper_mve_##FN##h,                             \
+            gen_helper_mve_##FN##s,                             \
+            NULL,                                               \
+        };                                                      \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                 \
+            return false;                                       \
+        }                                                       \
+        return do_2op_scalar(s, a, fns[a->size]);               \
+    }
+
+DO_2OP_FP_SCALAR(VADD_fp_scalar, vfadd_scalar)
+DO_2OP_FP_SCALAR(VSUB_fp_scalar, vfsub_scalar)
+DO_2OP_FP_SCALAR(VMUL_fp_scalar, vfmul_scalar)
+DO_2OP_FP_SCALAR(VFMA_scalar, vfma_scalar)
+DO_2OP_FP_SCALAR(VFMAS_scalar, vfmas_scalar)
 
 static bool do_long_dual_acc(DisasContext *s, arg_vmlaldav *a,
                              MVEGenLongDualAccOpFn *fn)
@@ -1165,6 +1410,8 @@ static bool trans_VPNOT(DisasContext *s, arg_VPNOT *a)
     }
 
     gen_helper_mve_vpnot(cpu_env);
+    /* This insn updates predication bits */
+    s->base.is_jmp = DISAS_UPDATE_NOCHAIN;
     mve_update_eci(s);
     return true;
 }
@@ -1274,7 +1521,8 @@ static bool trans_VADDLV(DisasContext *s, arg_VADDLV *a)
     return true;
 }
 
-static bool do_1imm(DisasContext *s, arg_1imm *a, MVEGenOneOpImmFn *fn)
+static bool do_1imm(DisasContext *s, arg_1imm *a, MVEGenOneOpImmFn *fn,
+                    GVecGen2iFn *vecfn)
 {
     TCGv_ptr qd;
     uint64_t imm;
@@ -1290,17 +1538,29 @@ static bool do_1imm(DisasContext *s, arg_1imm *a, MVEGenOneOpImmFn *fn)
 
     imm = asimd_imm_const(a->imm, a->cmode, a->op);
 
-    qd = mve_qreg_ptr(a->qd);
-    fn(cpu_env, qd, tcg_constant_i64(imm));
-    tcg_temp_free_ptr(qd);
+    if (vecfn && mve_no_predication(s)) {
+        vecfn(MO_64, mve_qreg_offset(a->qd), mve_qreg_offset(a->qd),
+              imm, 16, 16);
+    } else {
+        qd = mve_qreg_ptr(a->qd);
+        fn(cpu_env, qd, tcg_constant_i64(imm));
+        tcg_temp_free_ptr(qd);
+    }
     mve_update_eci(s);
     return true;
+}
+
+static void gen_gvec_vmovi(unsigned vece, uint32_t dofs, uint32_t aofs,
+                           int64_t c, uint32_t oprsz, uint32_t maxsz)
+{
+    tcg_gen_gvec_dup_imm(vece, dofs, oprsz, maxsz, c);
 }
 
 static bool trans_Vimm_1r(DisasContext *s, arg_1imm *a)
 {
     /* Handle decode of cmode/op here between VORR/VBIC/VMOV */
     MVEGenOneOpImmFn *fn;
+    GVecGen2iFn *vecfn;
 
     if ((a->cmode & 1) && a->cmode < 12) {
         if (a->op) {
@@ -1309,8 +1569,10 @@ static bool trans_Vimm_1r(DisasContext *s, arg_1imm *a)
              * so the VBIC becomes a logical AND operation.
              */
             fn = gen_helper_mve_vandi;
+            vecfn = tcg_gen_gvec_andi;
         } else {
             fn = gen_helper_mve_vorri;
+            vecfn = tcg_gen_gvec_ori;
         }
     } else {
         /* There is one unallocated cmode/op combination in this space */
@@ -1319,12 +1581,13 @@ static bool trans_Vimm_1r(DisasContext *s, arg_1imm *a)
         }
         /* asimd_imm_const() sorts out VMVNI vs VMOVI for us */
         fn = gen_helper_mve_vmovi;
+        vecfn = gen_gvec_vmovi;
     }
-    return do_1imm(s, a, fn);
+    return do_1imm(s, a, fn, vecfn);
 }
 
-static bool do_2shift(DisasContext *s, arg_2shift *a, MVEGenTwoOpShiftFn fn,
-                      bool negateshift)
+static bool do_2shift_vec(DisasContext *s, arg_2shift *a, MVEGenTwoOpShiftFn fn,
+                          bool negateshift, GVecGen2iFn vecfn)
 {
     TCGv_ptr qd, qm;
     int shift = a->shift;
@@ -1347,39 +1610,100 @@ static bool do_2shift(DisasContext *s, arg_2shift *a, MVEGenTwoOpShiftFn fn,
         shift = -shift;
     }
 
-    qd = mve_qreg_ptr(a->qd);
-    qm = mve_qreg_ptr(a->qm);
-    fn(cpu_env, qd, qm, tcg_constant_i32(shift));
-    tcg_temp_free_ptr(qd);
-    tcg_temp_free_ptr(qm);
+    if (vecfn && mve_no_predication(s)) {
+        vecfn(a->size, mve_qreg_offset(a->qd), mve_qreg_offset(a->qm),
+              shift, 16, 16);
+    } else {
+        qd = mve_qreg_ptr(a->qd);
+        qm = mve_qreg_ptr(a->qm);
+        fn(cpu_env, qd, qm, tcg_constant_i32(shift));
+        tcg_temp_free_ptr(qd);
+        tcg_temp_free_ptr(qm);
+    }
     mve_update_eci(s);
     return true;
 }
 
-#define DO_2SHIFT(INSN, FN, NEGATESHIFT)                         \
-    static bool trans_##INSN(DisasContext *s, arg_2shift *a)    \
-    {                                                           \
-        static MVEGenTwoOpShiftFn * const fns[] = {             \
-            gen_helper_mve_##FN##b,                             \
-            gen_helper_mve_##FN##h,                             \
-            gen_helper_mve_##FN##w,                             \
-            NULL,                                               \
-        };                                                      \
-        return do_2shift(s, a, fns[a->size], NEGATESHIFT);      \
+static bool do_2shift(DisasContext *s, arg_2shift *a, MVEGenTwoOpShiftFn fn,
+                      bool negateshift)
+{
+    return do_2shift_vec(s, a, fn, negateshift, NULL);
+}
+
+#define DO_2SHIFT_VEC(INSN, FN, NEGATESHIFT, VECFN)                     \
+    static bool trans_##INSN(DisasContext *s, arg_2shift *a)            \
+    {                                                                   \
+        static MVEGenTwoOpShiftFn * const fns[] = {                     \
+            gen_helper_mve_##FN##b,                                     \
+            gen_helper_mve_##FN##h,                                     \
+            gen_helper_mve_##FN##w,                                     \
+            NULL,                                                       \
+        };                                                              \
+        return do_2shift_vec(s, a, fns[a->size], NEGATESHIFT, VECFN);   \
     }
 
-DO_2SHIFT(VSHLI, vshli_u, false)
+#define DO_2SHIFT(INSN, FN, NEGATESHIFT)        \
+    DO_2SHIFT_VEC(INSN, FN, NEGATESHIFT, NULL)
+
+static void do_gvec_shri_s(unsigned vece, uint32_t dofs, uint32_t aofs,
+                           int64_t shift, uint32_t oprsz, uint32_t maxsz)
+{
+    /*
+     * We get here with a negated shift count, and we must handle
+     * shifts by the element size, which tcg_gen_gvec_sari() does not do.
+     */
+    shift = -shift;
+    if (shift == (8 << vece)) {
+        shift--;
+    }
+    tcg_gen_gvec_sari(vece, dofs, aofs, shift, oprsz, maxsz);
+}
+
+static void do_gvec_shri_u(unsigned vece, uint32_t dofs, uint32_t aofs,
+                           int64_t shift, uint32_t oprsz, uint32_t maxsz)
+{
+    /*
+     * We get here with a negated shift count, and we must handle
+     * shifts by the element size, which tcg_gen_gvec_shri() does not do.
+     */
+    shift = -shift;
+    if (shift == (8 << vece)) {
+        tcg_gen_gvec_dup_imm(vece, dofs, oprsz, maxsz, 0);
+    } else {
+        tcg_gen_gvec_shri(vece, dofs, aofs, shift, oprsz, maxsz);
+    }
+}
+
+DO_2SHIFT_VEC(VSHLI, vshli_u, false, tcg_gen_gvec_shli)
 DO_2SHIFT(VQSHLI_S, vqshli_s, false)
 DO_2SHIFT(VQSHLI_U, vqshli_u, false)
 DO_2SHIFT(VQSHLUI, vqshlui_s, false)
 /* These right shifts use a left-shift helper with negated shift count */
-DO_2SHIFT(VSHRI_S, vshli_s, true)
-DO_2SHIFT(VSHRI_U, vshli_u, true)
+DO_2SHIFT_VEC(VSHRI_S, vshli_s, true, do_gvec_shri_s)
+DO_2SHIFT_VEC(VSHRI_U, vshli_u, true, do_gvec_shri_u)
 DO_2SHIFT(VRSHRI_S, vrshli_s, true)
 DO_2SHIFT(VRSHRI_U, vrshli_u, true)
 
-DO_2SHIFT(VSRI, vsri, false)
-DO_2SHIFT(VSLI, vsli, false)
+DO_2SHIFT_VEC(VSRI, vsri, false, gen_gvec_sri)
+DO_2SHIFT_VEC(VSLI, vsli, false, gen_gvec_sli)
+
+#define DO_2SHIFT_FP(INSN, FN)                                  \
+    static bool trans_##INSN(DisasContext *s, arg_2shift *a)    \
+    {                                                           \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                 \
+            return false;                                       \
+        }                                                       \
+        return do_2shift(s, a, gen_helper_mve_##FN, false);     \
+    }
+
+DO_2SHIFT_FP(VCVT_SH_fixed, vcvt_sh)
+DO_2SHIFT_FP(VCVT_UH_fixed, vcvt_uh)
+DO_2SHIFT_FP(VCVT_HS_fixed, vcvt_hs)
+DO_2SHIFT_FP(VCVT_HU_fixed, vcvt_hu)
+DO_2SHIFT_FP(VCVT_SF_fixed, vcvt_sf)
+DO_2SHIFT_FP(VCVT_UF_fixed, vcvt_uf)
+DO_2SHIFT_FP(VCVT_FS_fixed, vcvt_fs)
+DO_2SHIFT_FP(VCVT_FU_fixed, vcvt_fu)
 
 static bool do_2shift_scalar(DisasContext *s, arg_shl_scalar *a,
                              MVEGenTwoOpShiftFn *fn)
@@ -1427,15 +1751,66 @@ DO_2SHIFT_SCALAR(VQSHL_U_scalar, vqshli_u)
 DO_2SHIFT_SCALAR(VQRSHL_S_scalar, vqrshli_s)
 DO_2SHIFT_SCALAR(VQRSHL_U_scalar, vqrshli_u)
 
-#define DO_VSHLL(INSN, FN)                                      \
-    static bool trans_##INSN(DisasContext *s, arg_2shift *a)    \
-    {                                                           \
-        static MVEGenTwoOpShiftFn * const fns[] = {             \
-            gen_helper_mve_##FN##b,                             \
-            gen_helper_mve_##FN##h,                             \
-        };                                                      \
-        return do_2shift(s, a, fns[a->size], false);            \
+#define DO_VSHLL(INSN, FN)                                              \
+    static bool trans_##INSN(DisasContext *s, arg_2shift *a)            \
+    {                                                                   \
+        static MVEGenTwoOpShiftFn * const fns[] = {                     \
+            gen_helper_mve_##FN##b,                                     \
+            gen_helper_mve_##FN##h,                                     \
+        };                                                              \
+        return do_2shift_vec(s, a, fns[a->size], false, do_gvec_##FN);  \
     }
+
+/*
+ * For the VSHLL vector helpers, the vece is the size of the input
+ * (ie MO_8 or MO_16); the helpers want to work in the output size.
+ * The shift count can be 0..<input size>, inclusive. (0 is VMOVL.)
+ */
+static void do_gvec_vshllbs(unsigned vece, uint32_t dofs, uint32_t aofs,
+                            int64_t shift, uint32_t oprsz, uint32_t maxsz)
+{
+    unsigned ovece = vece + 1;
+    unsigned ibits = vece == MO_8 ? 8 : 16;
+    tcg_gen_gvec_shli(ovece, dofs, aofs, ibits, oprsz, maxsz);
+    tcg_gen_gvec_sari(ovece, dofs, dofs, ibits - shift, oprsz, maxsz);
+}
+
+static void do_gvec_vshllbu(unsigned vece, uint32_t dofs, uint32_t aofs,
+                            int64_t shift, uint32_t oprsz, uint32_t maxsz)
+{
+    unsigned ovece = vece + 1;
+    tcg_gen_gvec_andi(ovece, dofs, aofs,
+                      ovece == MO_16 ? 0xff : 0xffff, oprsz, maxsz);
+    tcg_gen_gvec_shli(ovece, dofs, dofs, shift, oprsz, maxsz);
+}
+
+static void do_gvec_vshllts(unsigned vece, uint32_t dofs, uint32_t aofs,
+                            int64_t shift, uint32_t oprsz, uint32_t maxsz)
+{
+    unsigned ovece = vece + 1;
+    unsigned ibits = vece == MO_8 ? 8 : 16;
+    if (shift == 0) {
+        tcg_gen_gvec_sari(ovece, dofs, aofs, ibits, oprsz, maxsz);
+    } else {
+        tcg_gen_gvec_andi(ovece, dofs, aofs,
+                          ovece == MO_16 ? 0xff00 : 0xffff0000, oprsz, maxsz);
+        tcg_gen_gvec_sari(ovece, dofs, dofs, ibits - shift, oprsz, maxsz);
+    }
+}
+
+static void do_gvec_vshlltu(unsigned vece, uint32_t dofs, uint32_t aofs,
+                            int64_t shift, uint32_t oprsz, uint32_t maxsz)
+{
+    unsigned ovece = vece + 1;
+    unsigned ibits = vece == MO_8 ? 8 : 16;
+    if (shift == 0) {
+        tcg_gen_gvec_shri(ovece, dofs, aofs, ibits, oprsz, maxsz);
+    } else {
+        tcg_gen_gvec_andi(ovece, dofs, aofs,
+                          ovece == MO_16 ? 0xff00 : 0xffff0000, oprsz, maxsz);
+        tcg_gen_gvec_shri(ovece, dofs, dofs, ibits - shift, oprsz, maxsz);
+    }
+}
 
 DO_VSHLL(VSHLL_BS, vshllbs)
 DO_VSHLL(VSHLL_BU, vshllbu)
@@ -1633,6 +2008,8 @@ static bool do_vcmp(DisasContext *s, arg_vcmp *a, MVEGenCmpFn *fn)
         /* VPT */
         gen_vpst(s, a->mask);
     }
+    /* This insn updates predication bits */
+    s->base.is_jmp = DISAS_UPDATE_NOCHAIN;
     mve_update_eci(s);
     return true;
 }
@@ -1664,6 +2041,8 @@ static bool do_vcmp_scalar(DisasContext *s, arg_vcmp_scalar *a,
         /* VPT */
         gen_vpst(s, a->mask);
     }
+    /* This insn updates predication bits */
+    s->base.is_jmp = DISAS_UPDATE_NOCHAIN;
     mve_update_eci(s);
     return true;
 }
@@ -1699,6 +2078,42 @@ DO_VCMP(VCMPGE, vcmpge)
 DO_VCMP(VCMPLT, vcmplt)
 DO_VCMP(VCMPGT, vcmpgt)
 DO_VCMP(VCMPLE, vcmple)
+
+#define DO_VCMP_FP(INSN, FN)                                    \
+    static bool trans_##INSN(DisasContext *s, arg_vcmp *a)      \
+    {                                                           \
+        static MVEGenCmpFn * const fns[] = {                    \
+            NULL,                                               \
+            gen_helper_mve_##FN##h,                             \
+            gen_helper_mve_##FN##s,                             \
+            NULL,                                               \
+        };                                                      \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                 \
+            return false;                                       \
+        }                                                       \
+        return do_vcmp(s, a, fns[a->size]);                     \
+    }                                                           \
+    static bool trans_##INSN##_scalar(DisasContext *s,          \
+                                      arg_vcmp_scalar *a)       \
+    {                                                           \
+        static MVEGenScalarCmpFn * const fns[] = {              \
+            NULL,                                               \
+            gen_helper_mve_##FN##_scalarh,                      \
+            gen_helper_mve_##FN##_scalars,                      \
+            NULL,                                               \
+        };                                                      \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                 \
+            return false;                                       \
+        }                                                       \
+        return do_vcmp_scalar(s, a, fns[a->size]);              \
+    }
+
+DO_VCMP_FP(VCMPEQ_fp, vfcmpeq)
+DO_VCMP_FP(VCMPNE_fp, vfcmpne)
+DO_VCMP_FP(VCMPGE_fp, vfcmpge)
+DO_VCMP_FP(VCMPLT_fp, vfcmplt)
+DO_VCMP_FP(VCMPGT_fp, vfcmpgt)
+DO_VCMP_FP(VCMPLE_fp, vfcmple)
 
 static bool do_vmaxv(DisasContext *s, arg_vmaxv *a, MVEGenVADDVFn fn)
 {
@@ -1747,6 +2162,26 @@ DO_VMAXV(VMAXAV, vmaxav)
 DO_VMAXV(VMINV_S, vminvs)
 DO_VMAXV(VMINV_U, vminvu)
 DO_VMAXV(VMINAV, vminav)
+
+#define DO_VMAXV_FP(INSN, FN)                                   \
+    static bool trans_##INSN(DisasContext *s, arg_vmaxv *a)     \
+    {                                                           \
+        static MVEGenVADDVFn * const fns[] = {                  \
+            NULL,                                               \
+            gen_helper_mve_##FN##h,                             \
+            gen_helper_mve_##FN##s,                             \
+            NULL,                                               \
+        };                                                      \
+        if (!dc_isar_feature(aa32_mve_fp, s)) {                 \
+            return false;                                       \
+        }                                                       \
+        return do_vmaxv(s, a, fns[a->size]);                    \
+    }
+
+DO_VMAXV_FP(VMAXNMV, vmaxnmv)
+DO_VMAXV_FP(VMINNMV, vminnmv)
+DO_VMAXV_FP(VMAXNMAV, vmaxnmav)
+DO_VMAXV_FP(VMINNMAV, vminnmav)
 
 static bool do_vabav(DisasContext *s, arg_vabav *a, MVEGenVABAVFn *fn)
 {

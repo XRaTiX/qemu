@@ -175,6 +175,7 @@ struct DisasContext {
     bool spe_enabled;
     bool tm_enabled;
     bool gtse;
+    bool hr;
     ppc_spr_t *spr_cb; /* Needed to check rights for mfspr/mtspr */
     int singlestep_enabled;
     uint32_t flags;
@@ -5516,7 +5517,15 @@ static void gen_tlbiel(DisasContext *ctx)
 #if defined(CONFIG_USER_ONLY)
     GEN_PRIV;
 #else
-    CHK_SV;
+    bool psr = (ctx->opcode >> 17) & 0x1;
+
+    if (ctx->pr || (!ctx->hv && !psr && ctx->hr)) {
+        /*
+         * tlbiel is privileged except when PSR=0 and HR=1, making it
+         * hypervisor privileged.
+         */
+        GEN_PRIV;
+    }
 
     gen_helper_tlbie(cpu_env, cpu_gpr[rB(ctx->opcode)]);
 #endif /* defined(CONFIG_USER_ONLY) */
@@ -5528,12 +5537,20 @@ static void gen_tlbie(DisasContext *ctx)
 #if defined(CONFIG_USER_ONLY)
     GEN_PRIV;
 #else
+    bool psr = (ctx->opcode >> 17) & 0x1;
     TCGv_i32 t1;
 
-    if (ctx->gtse) {
-        CHK_SV; /* If gtse is set then tlbie is supervisor privileged */
-    } else {
-        CHK_HV; /* Else hypervisor privileged */
+    if (ctx->pr) {
+        /* tlbie is privileged... */
+        GEN_PRIV;
+    } else if (!ctx->hv) {
+        if (!ctx->gtse || (!psr && ctx->hr)) {
+            /*
+             * ... except when GTSE=0 or when PSR=0 and HR=1, making it
+             * hypervisor privileged.
+             */
+            GEN_PRIV;
+        }
     }
 
     if (NARROW_MODE(ctx)) {
@@ -8539,6 +8556,7 @@ static void ppc_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->vsx_enabled = (hflags >> HFLAGS_VSX) & 1;
     ctx->tm_enabled = (hflags >> HFLAGS_TM) & 1;
     ctx->gtse = (hflags >> HFLAGS_GTSE) & 1;
+    ctx->hr = (hflags >> HFLAGS_HR) & 1;
 
     ctx->singlestep_enabled = 0;
     if ((hflags >> HFLAGS_SE) & 1) {
@@ -8585,7 +8603,7 @@ static void ppc_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
               ctx->base.pc_next, ctx->mem_idx, (int)msr_ir);
 
     ctx->cia = pc = ctx->base.pc_next;
-    insn = translator_ldl_swap(env, pc, need_byteswap(ctx));
+    insn = translator_ldl_swap(env, dcbase, pc, need_byteswap(ctx));
     ctx->base.pc_next = pc += 4;
 
     if (!is_prefix_insn(ctx, insn)) {
@@ -8600,7 +8618,8 @@ static void ppc_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
         gen_exception_err(ctx, POWERPC_EXCP_ALIGN, POWERPC_EXCP_ALIGN_INSN);
         ok = true;
     } else {
-        uint32_t insn2 = translator_ldl_swap(env, pc, need_byteswap(ctx));
+        uint32_t insn2 = translator_ldl_swap(env, dcbase, pc,
+                                             need_byteswap(ctx));
         ctx->base.pc_next = pc += 4;
         ok = decode_insn64(ctx, deposit64(insn2, 32, 32, insn));
     }

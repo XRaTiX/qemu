@@ -1907,7 +1907,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
 
     /* Read all of the insns for the region.  */
     for (i = 0; i < max_insns; ++i) {
-        insns[i] = translator_lduw(env, pc + i * 2);
+        insns[i] = translator_lduw(env, &ctx->base, pc + i * 2);
     }
 
     ld_adr = ld_dst = ld_mop = -1;
@@ -2307,7 +2307,7 @@ static void sh4_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
     }
 #endif
 
-    ctx->opcode = translator_lduw(env, ctx->base.pc_next);
+    ctx->opcode = translator_lduw(env, &ctx->base, ctx->base.pc_next);
     decode_opc(ctx);
     ctx->base.pc_next += 2;
 }
@@ -2344,7 +2344,7 @@ static void sh4_tr_tb_stop(DisasContextBase *dcbase, CPUState *cs)
 
 static void sh4_tr_disas_log(const DisasContextBase *dcbase, CPUState *cs)
 {
-    qemu_log("IN:\n");  /* , lookup_symbol(dcbase->pc_first)); */
+    qemu_log("IN: %s\n", lookup_symbol(dcbase->pc_first));
     log_target_disas(cs, dcbase->pc_first, dcbase->tb->size);
 }
 

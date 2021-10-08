@@ -1,3 +1,5 @@
+.. _Deprecated features:
+
 Deprecated features
 ===================
 
@@ -138,6 +140,53 @@ an underscore between "window" and "close").
 The ``-no-quit`` is a synonym for ``-display ...,window-close=off`` which
 should be used instead.
 
+``-alt-grab`` and ``-display sdl,alt_grab=on`` (since 6.2)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use ``-display sdl,grab-mod=lshift-lctrl-lalt`` instead.
+
+``-ctrl-grab`` and ``-display sdl,ctrl_grab=on`` (since 6.2)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use ``-display sdl,grab-mod=rctrl`` instead.
+
+``-sdl`` (since 6.2)
+''''''''''''''''''''
+
+Use ``-display sdl`` instead.
+
+``-curses`` (since 6.2)
+'''''''''''''''''''''''
+
+Use ``-display curses`` instead.
+
+``-smp`` ("parameter=0" SMP configurations) (since 6.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Specified CPU topology parameters must be greater than zero.
+
+In the SMP configuration, users should either provide a CPU topology
+parameter with a reasonable value (greater than zero) or just omit it
+and QEMU will compute the missing value.
+
+However, historically it was implicitly allowed for users to provide
+a parameter with zero value, which is meaningless and could also possibly
+cause unexpected results in the -smp parsing. So support for this kind of
+configurations (e.g. -smp 8,sockets=0) is deprecated since 6.2 and will
+be removed in the near future, users have to ensure that all the topology
+members described with -smp are greater than zero.
+
+Plugin argument passing through ``arg=<string>`` (since 6.1)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Passing TCG plugins arguments through ``arg=`` is redundant is makes the
+command-line less readable, especially when the argument itself consist of a
+name and a value, e.g. ``-plugin plugin_name,arg="arg_name=arg_value"``.
+Therefore, the usage of ``arg`` is redundant. Single-word arguments are treated
+as short-form boolean values, and passed to plugins as ``arg_name=on``.
+However, short-form booleans are deprecated and full explicit ``arg_name=on``
+form is preferred.
+
 
 QEMU Machine Protocol (QMP) commands
 ------------------------------------
@@ -204,15 +253,18 @@ The ``I7200`` guest CPU relies on the nanoMIPS ISA, which is deprecated
 (the ISA has never been upstreamed to a compiler toolchain). Therefore
 this CPU is also deprecated.
 
+
+QEMU API (QAPI) events
+----------------------
+
+``MEM_UNPLUG_ERROR`` (since 6.2)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Use the more generic event ``DEVICE_UNPLUG_GUEST_ERROR`` instead.
+
+
 System emulator machines
 ------------------------
-
-Raspberry Pi ``raspi2`` and ``raspi3`` machines (since 5.2)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The Raspberry Pi machines come in various models (A, A+, B, B+). To be able
-to distinguish which model QEMU is implementing, the ``raspi2`` and ``raspi3``
-machines have been renamed ``raspi2b`` and ``raspi3b``.
 
 Aspeed ``swift-bmc`` machine (since 6.1)
 ''''''''''''''''''''''''''''''''''''''''

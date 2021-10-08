@@ -67,9 +67,6 @@
 #define ASC_BASE              (IO_BASE + 0x14000)
 #define SWIM_BASE             (IO_BASE + 0x1E000)
 
-#define NUBUS_SUPER_SLOT_BASE 0x60000000
-#define NUBUS_SLOT_BASE       0xf0000000
-
 #define SONIC_PROM_SIZE       0x1000
 
 /*
@@ -77,9 +74,16 @@
  * is needed by the kernel to have early display and
  * thus provided by the bootloader
  */
-#define VIDEO_BASE            0xf9001000
+#define VIDEO_BASE            0xf9000000
 
 #define MAC_CLOCK  3686418
+
+/*
+ * Slot 0x9 is reserved for use by the in-built framebuffer whilst only
+ * slots 0xc, 0xd and 0xe physically exist on the Quadra 800
+ */
+#define Q800_NUBUS_SLOTS_AVAILABLE    (BIT(0x9) | BIT(0xc) | BIT(0xd) | \
+                                       BIT(0xe))
 
 /*
  * The GLUE (General Logic Unit) is an Apple custom integrated circuit chip
@@ -217,6 +221,7 @@ static void q800_init(MachineState *machine)
     uint8_t *prom;
     const int io_slice_nb = (IO_SIZE / IO_SLICE) - 1;
     int i, checksum;
+    MacFbMode *macfb_mode;
     ram_addr_t ram_size = machine->ram_size;
     const char *kernel_filename = machine->kernel_filename;
     const char *initrd_filename = machine->initrd_filename;
@@ -225,7 +230,7 @@ static void q800_init(MachineState *machine)
     hwaddr parameters_base;
     CPUState *cs;
     DeviceState *dev;
-    DeviceState *via_dev;
+    DeviceState *via1_dev, *via2_dev;
     DeviceState *escc_orgate;
     SysBusESPState *sysbus_esp;
     ESPState *esp;
@@ -270,27 +275,29 @@ static void q800_init(MachineState *machine)
     object_property_set_link(OBJECT(glue), "cpu", OBJECT(cpu), &error_abort);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(glue), &error_fatal);
 
-    /* VIA */
-
-    via_dev = qdev_new(TYPE_MAC_VIA);
+    /* VIA 1 */
+    via1_dev = qdev_new(TYPE_MOS6522_Q800_VIA1);
     dinfo = drive_get(IF_MTD, 0, 0);
     if (dinfo) {
-        qdev_prop_set_drive(via_dev, "drive", blk_by_legacy_dinfo(dinfo));
+        qdev_prop_set_drive(via1_dev, "drive", blk_by_legacy_dinfo(dinfo));
     }
-    sysbus = SYS_BUS_DEVICE(via_dev);
+    sysbus = SYS_BUS_DEVICE(via1_dev);
     sysbus_realize_and_unref(sysbus, &error_fatal);
-    sysbus_mmio_map(sysbus, 0, VIA_BASE);
-    qdev_connect_gpio_out_named(DEVICE(sysbus), "irq", 0,
-                                qdev_get_gpio_in(glue, 0));
-    qdev_connect_gpio_out_named(DEVICE(sysbus), "irq", 1,
-                                qdev_get_gpio_in(glue, 1));
+    sysbus_mmio_map(sysbus, 1, VIA_BASE);
+    sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in(glue, 0));
 
-
-    adb_bus = qdev_get_child_bus(via_dev, "adb.0");
+    adb_bus = qdev_get_child_bus(via1_dev, "adb.0");
     dev = qdev_new(TYPE_ADB_KEYBOARD);
     qdev_realize_and_unref(dev, adb_bus, &error_fatal);
     dev = qdev_new(TYPE_ADB_MOUSE);
     qdev_realize_and_unref(dev, adb_bus, &error_fatal);
+
+    /* VIA 2 */
+    via2_dev = qdev_new(TYPE_MOS6522_Q800_VIA2);
+    sysbus = SYS_BUS_DEVICE(via2_dev);
+    sysbus_realize_and_unref(sysbus, &error_fatal);
+    sysbus_mmio_map(sysbus, 1, VIA_BASE + VIA_SIZE);
+    sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in(glue, 1));
 
     /* MACSONIC */
 
@@ -375,12 +382,10 @@ static void q800_init(MachineState *machine)
 
     sysbus = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sysbus, &error_fatal);
-    sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in_named(via_dev,
-                                                         "via2-irq",
-                                                         VIA2_IRQ_SCSI_BIT));
-    sysbus_connect_irq(sysbus, 1,
-                       qdev_get_gpio_in_named(via_dev, "via2-irq",
-                                              VIA2_IRQ_SCSI_DATA_BIT));
+    sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in(via2_dev,
+                                                   VIA2_IRQ_SCSI_BIT));
+    sysbus_connect_irq(sysbus, 1, qdev_get_gpio_in(via2_dev,
+                                                   VIA2_IRQ_SCSI_DATA_BIT));
     sysbus_mmio_map(sysbus, 0, ESP_BASE);
     sysbus_mmio_map(sysbus, 1, ESP_PDMA);
 
@@ -395,19 +400,39 @@ static void q800_init(MachineState *machine)
     /* NuBus */
 
     dev = qdev_new(TYPE_MAC_NUBUS_BRIDGE);
+    qdev_prop_set_uint32(dev, "slot-available-mask",
+                         Q800_NUBUS_SLOTS_AVAILABLE);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, NUBUS_SUPER_SLOT_BASE);
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, NUBUS_SLOT_BASE);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0,
+                    MAC_NUBUS_FIRST_SLOT * NUBUS_SUPER_SLOT_SIZE);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, NUBUS_SLOT_BASE +
+                    MAC_NUBUS_FIRST_SLOT * NUBUS_SLOT_SIZE);
+    qdev_connect_gpio_out(dev, 9,
+                          qdev_get_gpio_in_named(via2_dev, "nubus-irq",
+                          VIA2_NUBUS_IRQ_INTVIDEO));
+    for (i = 1; i < VIA2_NUBUS_IRQ_NB; i++) {
+        qdev_connect_gpio_out(dev, 9 + i,
+                              qdev_get_gpio_in_named(via2_dev, "nubus-irq",
+                                                     VIA2_NUBUS_IRQ_9 + i));
+    }
 
-    nubus = MAC_NUBUS_BRIDGE(dev)->bus;
+    nubus = &NUBUS_BRIDGE(dev)->bus;
 
     /* framebuffer in nubus slot #9 */
 
     dev = qdev_new(TYPE_NUBUS_MACFB);
+    qdev_prop_set_uint32(dev, "slot", 9);
     qdev_prop_set_uint32(dev, "width", graphic_width);
     qdev_prop_set_uint32(dev, "height", graphic_height);
     qdev_prop_set_uint8(dev, "depth", graphic_depth);
+    if (graphic_width == 1152 && graphic_height == 870 && graphic_depth == 8) {
+        qdev_prop_set_uint8(dev, "display", MACFB_DISPLAY_APPLE_21_COLOR);
+    } else {
+        qdev_prop_set_uint8(dev, "display", MACFB_DISPLAY_VGA);
+    }
     qdev_realize_and_unref(dev, BUS(nubus), &error_fatal);
+
+    macfb_mode = (NUBUS_MACFB(dev)->macfb).mode;
 
     cs = CPU(cpu);
     if (linux_boot) {
@@ -431,12 +456,12 @@ static void q800_init(MachineState *machine)
         BOOTINFO1(cs->as, parameters_base,
                   BI_MAC_MEMSIZE, ram_size >> 20); /* in MB */
         BOOTINFO2(cs->as, parameters_base, BI_MEMCHUNK, 0, ram_size);
-        BOOTINFO1(cs->as, parameters_base, BI_MAC_VADDR, VIDEO_BASE);
+        BOOTINFO1(cs->as, parameters_base, BI_MAC_VADDR,
+                  VIDEO_BASE + macfb_mode->offset);
         BOOTINFO1(cs->as, parameters_base, BI_MAC_VDEPTH, graphic_depth);
         BOOTINFO1(cs->as, parameters_base, BI_MAC_VDIM,
                   (graphic_height << 16) | graphic_width);
-        BOOTINFO1(cs->as, parameters_base, BI_MAC_VROW,
-                  (graphic_width * graphic_depth + 7) / 8);
+        BOOTINFO1(cs->as, parameters_base, BI_MAC_VROW, macfb_mode->stride);
         BOOTINFO1(cs->as, parameters_base, BI_MAC_SCCBASE, SCC_BASE);
 
         rom = g_malloc(sizeof(*rom));

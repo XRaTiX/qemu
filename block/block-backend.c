@@ -870,6 +870,14 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
 }
 
 /*
+ * Change BlockDriverState associated with @blk.
+ */
+int blk_replace_bs(BlockBackend *blk, BlockDriverState *new_bs, Error **errp)
+{
+    return bdrv_replace_child_bs(blk->root, new_bs, errp);
+}
+
+/*
  * Sets the permission bitmasks that the user of the BlockBackend needs.
  */
 int blk_set_perm(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
@@ -1976,6 +1984,12 @@ uint32_t blk_get_max_transfer(BlockBackend *blk)
         max = MIN_NON_ZERO(max, bs->bl.max_transfer);
     }
     return ROUND_DOWN(max, blk_get_request_alignment(blk));
+}
+
+int blk_get_max_hw_iov(BlockBackend *blk)
+{
+    return MIN_NON_ZERO(blk->root->bs->bl.max_hw_iov,
+                        blk->root->bs->bl.max_iov);
 }
 
 int blk_get_max_iov(BlockBackend *blk)

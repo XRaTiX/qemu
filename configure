@@ -142,11 +142,11 @@ lines: ${BASH_LINENO[*]}"
 }
 
 do_cc() {
-    do_compiler "$cc" "$@"
+    do_compiler "$cc" $CPU_CFLAGS "$@"
 }
 
 do_cxx() {
-    do_compiler "$cxx" "$@"
+    do_compiler "$cxx" $CPU_CFLAGS "$@"
 }
 
 # Append $2 to the variable named $1, with space separation
@@ -721,6 +721,7 @@ GNU/kFreeBSD)
 ;;
 FreeBSD)
   bsd="yes"
+  bsd_user="yes"
   make="${MAKE-gmake}"
   audio_drv_list="oss try-sdl"
   audio_possible_drivers="oss sdl pa"
@@ -781,12 +782,6 @@ Linux)
   vhost_user=${default_feature:-yes}
 ;;
 esac
-
-if [ "$bsd" = "yes" ] ; then
-  if [ "$darwin" != "yes" ] ; then
-    bsd_user="yes"
-  fi
-fi
 
 : ${make=${MAKE-make}}
 
@@ -1693,7 +1688,6 @@ esac
 
 eval "cross_cc_${cpu}=\$cc"
 cross_cc_vars="$cross_cc_vars cross_cc_${cpu}"
-QEMU_CFLAGS="$CPU_CFLAGS $QEMU_CFLAGS"
 
 # For user-mode emulation the host arch has to be one we explicitly
 # support, even if we're using TCI.
@@ -2000,7 +1994,7 @@ python_version=$($python -c 'import sys; print("%d.%d.%d" % (sys.version_info[0]
 python="$python -B"
 
 if test -z "$meson"; then
-    if test "$explicit_python" = no && has meson && version_ge "$(meson --version)" 0.55.3; then
+    if test "$explicit_python" = no && has meson && version_ge "$(meson --version)" 0.59.2; then
         meson=meson
     elif test $git_submodules_action != 'ignore' ; then
         meson=git
@@ -2099,8 +2093,8 @@ cat > $TMPC << EOF
 #  endif
 # endif
 #elif defined(__GNUC__) && defined(__GNUC_MINOR__)
-# if __GNUC__ < 7 || (__GNUC__ == 7 && __GNUC_MINOR__ < 5)
-#  error You need at least GCC v7.5.0 to compile QEMU
+# if __GNUC__ < 7 || (__GNUC__ == 7 && __GNUC_MINOR__ < 4)
+#  error You need at least GCC v7.4.0 to compile QEMU
 # endif
 #else
 # error You either need GCC or Clang to compiler QEMU
@@ -2108,7 +2102,7 @@ cat > $TMPC << EOF
 int main (void) { return 0; }
 EOF
 if ! compile_prog "" "" ; then
-    error_exit "You need at least GCC v7.5 or Clang v6.0 (or XCode Clang v10.0)"
+    error_exit "You need at least GCC v7.4 or Clang v6.0 (or XCode Clang v10.0)"
 fi
 
 # Accumulate -Wfoo and -Wno-bar separately.
@@ -3187,9 +3181,8 @@ glib_req_ver=2.56
 glib_modules=gthread-2.0
 if test "$modules" = yes; then
     glib_modules="$glib_modules gmodule-export-2.0"
-fi
-if test "$plugins" = "yes"; then
-    glib_modules="$glib_modules gmodule-2.0"
+elif test "$plugins" = "yes"; then
+    glib_modules="$glib_modules gmodule-no-export-2.0"
 fi
 
 for i in $glib_modules; do
@@ -3451,13 +3444,6 @@ esac
 
 ##########################################
 # opengl probe (for sdl2, gtk)
-
-gbm="no"
-if $pkg_config gbm; then
-    gbm_cflags="$($pkg_config --cflags gbm)"
-    gbm_libs="$($pkg_config --libs gbm)"
-    gbm="yes"
-fi
 
 if test "$opengl" != "no" ; then
   epoxy=no
@@ -4198,13 +4184,21 @@ fi
 
 ##########################################
 # checks for fuzzer
-if test "$fuzzing" = "yes" && test -z "${LIB_FUZZING_ENGINE+xxx}"; then
+if test "$fuzzing" = "yes" ; then
   write_c_fuzzer_skeleton
-  if compile_prog "$CPU_CFLAGS -Werror -fsanitize=fuzzer" ""; then
-    have_fuzzer=yes
-  else
-    error_exit "Your compiler doesn't support -fsanitize=fuzzer"
-    exit 1
+  if test -z "${LIB_FUZZING_ENGINE+xxx}"; then
+    if compile_prog "$CPU_CFLAGS -Werror -fsanitize=fuzzer" ""; then
+      have_fuzzer=yes
+    else
+      error_exit "Your compiler doesn't support -fsanitize=fuzzer"
+      exit 1
+    fi
+  fi
+
+  have_clang_coverage_filter=no
+  echo > $TMPTXT
+  if compile_prog "$CPU_CFLAGS -Werror -fsanitize=fuzzer -fsanitize-coverage-allowlist=$TMPTXT" ""; then
+    have_clang_coverage_filter=yes
   fi
 fi
 
@@ -4681,13 +4675,6 @@ if test "$opengl" = "yes" ; then
   echo "OPENGL_LIBS=$opengl_libs" >> $config_host_mak
 fi
 
-if test "$gbm" = "yes" ; then
-    echo "CONFIG_GBM=y" >> $config_host_mak
-    echo "GBM_LIBS=$gbm_libs" >> $config_host_mak
-    echo "GBM_CFLAGS=$gbm_cflags" >> $config_host_mak
-fi
-
-
 if test "$avx2_opt" = "yes" ; then
   echo "CONFIG_AVX2_OPT=y" >> $config_host_mak
 fi
@@ -4884,6 +4871,14 @@ if test "$fuzzing" = "yes" ; then
   else
     FUZZ_EXE_LDFLAGS="$LIB_FUZZING_ENGINE"
   fi
+
+  # Specify a filter to only instrument code that is directly related to
+  # virtual-devices.
+  if test "$have_clang_coverage_filter" = "yes" ; then
+    cp "$source_path/scripts/oss-fuzz/instrumentation-filter-template" \
+       instrumentation-filter
+    QEMU_CFLAGS="$QEMU_CFLAGS -fsanitize-coverage-allowlist=instrumentation-filter"
+  fi
 fi
 
 if test "$plugins" = "yes" ; then
@@ -5056,7 +5051,9 @@ for bios_file in \
     $source_path/pc-bios/openbios-* \
     $source_path/pc-bios/u-boot.* \
     $source_path/pc-bios/edk2-*.fd.bz2 \
-    $source_path/pc-bios/palcode-*
+    $source_path/pc-bios/palcode-* \
+    $source_path/pc-bios/qemu_vga.ndrv
+
 do
     LINKS="$LINKS pc-bios/$(basename $bios_file)"
 done
@@ -5116,9 +5113,9 @@ if test "$skip_meson" = no; then
   echo "c_link_args = [${LDFLAGS:+$(meson_quote $LDFLAGS)}]" >> $cross
   echo "cpp_link_args = [${LDFLAGS:+$(meson_quote $LDFLAGS)}]" >> $cross
   echo "[binaries]" >> $cross
-  echo "c = [$(meson_quote $cc)]" >> $cross
-  test -n "$cxx" && echo "cpp = [$(meson_quote $cxx)]" >> $cross
-  test -n "$objcc" && echo "objc = [$(meson_quote $objcc)]" >> $cross
+  echo "c = [$(meson_quote $cc $CPU_CFLAGS)]" >> $cross
+  test -n "$cxx" && echo "cpp = [$(meson_quote $cxx $CPU_CFLAGS)]" >> $cross
+  test -n "$objcc" && echo "objc = [$(meson_quote $objcc $CPU_CFLAGS)]" >> $cross
   echo "ar = [$(meson_quote $ar)]" >> $cross
   echo "nm = [$(meson_quote $nm)]" >> $cross
   echo "pkgconfig = [$(meson_quote $pkg_config_exe)]" >> $cross
@@ -5166,10 +5163,6 @@ if test "$skip_meson" = no; then
   mv $cross config-meson.cross
 
   rm -rf meson-private meson-info meson-logs
-  unset staticpic
-  if ! version_ge "$($meson --version)" 0.56.0; then
-    staticpic=$(if test "$pie" = yes; then echo true; else echo false; fi)
-  fi
   NINJA=$ninja $meson setup \
         --prefix "$prefix" \
         --libdir "$libdir" \
@@ -5189,7 +5182,6 @@ if test "$skip_meson" = no; then
         -Dwerror=$(if test "$werror" = yes; then echo true; else echo false; fi) \
         -Dstrip=$(if test "$strip_opt" = yes; then echo true; else echo false; fi) \
         -Db_pie=$(if test "$pie" = yes; then echo true; else echo false; fi) \
-        ${staticpic:+-Db_staticpic=$staticpic} \
         -Db_coverage=$(if test "$gcov" = yes; then echo true; else echo false; fi) \
         -Db_lto=$lto -Dcfi=$cfi -Dcfi_debug=$cfi_debug \
         -Dmalloc=$malloc -Dmalloc_trim=$malloc_trim -Dsparse=$sparse \
@@ -5225,6 +5217,7 @@ else
     perl -i -ne '
       s/^gettext = true$/gettext = auto/;
       s/^gettext = false$/gettext = disabled/;
+      /^b_staticpic/ && next;
       print;' meson-private/cmd_line.txt
   fi
 fi

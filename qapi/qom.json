@@ -618,7 +618,7 @@
   'data': { '*align': 'size',
             '*discard-data': 'bool',
             'mem-path': 'str',
-            '*pmem': { 'type': 'bool', 'if': 'defined(CONFIG_LIBPMEM)' },
+            '*pmem': { 'type': 'bool', 'if': 'CONFIG_LIBPMEM' },
             '*readonly': 'bool' } }
 
 ##
@@ -646,6 +646,23 @@
   'data': { '*hugetlb': 'bool',
             '*hugetlbsize': 'size',
             '*seal': 'bool' } }
+
+##
+# @MemoryBackendEpcProperties:
+#
+# Properties for memory-backend-epc objects.
+#
+# The @share boolean option is true by default with epc
+#
+# The @merge boolean option is false by default with epc
+#
+# The @dump boolean option is false by default with epc
+#
+# Since: 6.2
+##
+{ 'struct': 'MemoryBackendEpcProperties',
+  'base': 'MemoryBackendProperties',
+  'data': {} }
 
 ##
 # @PrManagerHelperProperties:
@@ -782,7 +799,7 @@
     'cryptodev-backend',
     'cryptodev-backend-builtin',
     { 'name': 'cryptodev-vhost-user',
-      'if': 'defined(CONFIG_VHOST_CRYPTO)' },
+      'if': 'CONFIG_VHOST_CRYPTO' },
     'dbus-vmstate',
     'filter-buffer',
     'filter-dump',
@@ -795,8 +812,9 @@
     'iothread',
     'memory-backend-file',
     { 'name': 'memory-backend-memfd',
-      'if': 'defined(CONFIG_LINUX)' },
+      'if': 'CONFIG_LINUX' },
     'memory-backend-ram',
+    'memory-backend-epc',
     'pef-guest',
     'pr-manager-helper',
     'qtest',
@@ -840,7 +858,7 @@
       'cryptodev-backend':          'CryptodevBackendProperties',
       'cryptodev-backend-builtin':  'CryptodevBackendProperties',
       'cryptodev-vhost-user':       { 'type': 'CryptodevVhostUserProperties',
-                                      'if': 'defined(CONFIG_VHOST_CRYPTO)' },
+                                      'if': 'CONFIG_VHOST_CRYPTO' },
       'dbus-vmstate':               'DBusVMStateProperties',
       'filter-buffer':              'FilterBufferProperties',
       'filter-dump':                'FilterDumpProperties',
@@ -853,8 +871,9 @@
       'iothread':                   'IothreadProperties',
       'memory-backend-file':        'MemoryBackendFileProperties',
       'memory-backend-memfd':       { 'type': 'MemoryBackendMemfdProperties',
-                                      'if': 'defined(CONFIG_LINUX)' },
+                                      'if': 'CONFIG_LINUX' },
       'memory-backend-ram':         'MemoryBackendProperties',
+      'memory-backend-epc':         'MemoryBackendEpcProperties',
       'pr-manager-helper':          'PrManagerHelperProperties',
       'qtest':                      'QtestProperties',
       'rng-builtin':                'RngProperties',
