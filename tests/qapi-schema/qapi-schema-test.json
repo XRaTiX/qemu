@@ -119,6 +119,7 @@
 { 'alternate': 'AltEnumNum', 'data': { 'e': 'EnumOne', 'n': 'number' } }
 { 'alternate': 'AltNumEnum', 'data': { 'n': 'number', 'e': 'EnumOne' } }
 { 'alternate': 'AltEnumInt', 'data': { 'e': 'EnumOne', 'i': 'int' } }
+{ 'alternate': 'AltListInt', 'data': { 'l': ['int'], 'i': 'int' } }
 
 # for testing use of 'str' within alternates
 { 'alternate': 'AltStrObj', 'data': { 's': 'str', 'o': 'TestStruct' } }
@@ -273,7 +274,7 @@
   'data': { 'foo': { 'type': 'int', 'features': [ 'deprecated' ] } },
   'features': [ 'feature1' ] }
 { 'struct': 'FeatureStruct2',
-  'data': { 'foo': 'int' },
+  'data': { 'foo': { 'type': 'int', 'features': [ 'unstable' ] } },
   'features': [ { 'name': 'feature1' } ] }
 { 'struct': 'FeatureStruct3',
   'data': { 'foo': 'int' },
@@ -301,7 +302,8 @@
                                  'TEST_IF_COND_2'] } } ] }
 
 { 'enum': 'FeatureEnum1',
-  'data': [ 'eins', 'zwei', 'drei' ],
+  'data': [ 'eins', 'zwei',
+            { 'name': 'drei', 'features': [ 'deprecated' ] } ],
   'features': [ 'feature1' ] }
 
 { 'union': 'FeatureUnion1',
@@ -330,7 +332,7 @@
 { 'command': 'test-command-features1',
   'features': [ 'deprecated' ] }
 { 'command': 'test-command-features3',
-  'features': [ 'feature1', 'feature2' ] }
+  'features': [ 'unstable', 'feature1', 'feature2' ] }
 
 { 'command': 'test-command-cond-features1',
   'features': [ { 'name': 'feature1', 'if': 'TEST_IF_FEATURE_1'} ] }
@@ -347,3 +349,6 @@
 
 { 'event': 'TEST_EVENT_FEATURES1',
   'features': [ 'deprecated' ] }
+
+{ 'event': 'TEST_EVENT_FEATURES2',
+  'features': [ 'unstable' ] }

@@ -61,14 +61,14 @@ static inline TCGv_i32 load_cpu_offset(int offset)
 
 #define load_cpu_field(name) load_cpu_offset(offsetof(CPUARMState, name))
 
-static inline void store_cpu_offset(TCGv_i32 var, int offset)
-{
-    tcg_gen_st_i32(var, cpu_env, offset);
-    tcg_temp_free_i32(var);
-}
+void store_cpu_offset(TCGv_i32 var, int offset, int size);
 
-#define store_cpu_field(var, name) \
-    store_cpu_offset(var, offsetof(CPUARMState, name))
+#define store_cpu_field(var, name)                              \
+    store_cpu_offset(var, offsetof(CPUARMState, name),          \
+                     sizeof_field(CPUARMState, name))
+
+#define store_cpu_field_constant(val, name) \
+    store_cpu_field(tcg_constant_i32(val), name)
 
 /* Create a new temporary and set it to the value of a CPU register.  */
 static inline TCGv_i32 load_reg(DisasContext *s, int reg)
@@ -114,13 +114,13 @@ void gen_aa32_st_i64(DisasContext *s, TCGv_i64 val, TCGv_i32 a32,
 static inline void gen_aa32_ld64(DisasContext *s, TCGv_i64 val,
                                  TCGv_i32 a32, int index)
 {
-    gen_aa32_ld_i64(s, val, a32, index, MO_Q);
+    gen_aa32_ld_i64(s, val, a32, index, MO_UQ);
 }
 
 static inline void gen_aa32_st64(DisasContext *s, TCGv_i64 val,
                                  TCGv_i32 a32, int index)
 {
-    gen_aa32_st_i64(s, val, a32, index, MO_Q);
+    gen_aa32_st_i64(s, val, a32, index, MO_UQ);
 }
 
 DO_GEN_LD(8u, MO_UB)

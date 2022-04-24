@@ -33,6 +33,7 @@
 #include "migration/blocker.h"
 #include "qemu/bswap.h"
 #include "qemu/uuid.h"
+#include "qemu/memalign.h"
 #include "qapi/qmp/qdict.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qapi-visit-block-core.h"
@@ -276,7 +277,8 @@ static int vpc_open(BlockDriverState *bs, QDict *options, int flags,
         if (ret < 0) {
             goto fail;
         }
-        if (strncmp(footer->creator, "conectix", 8)) {
+        if (strncmp(footer->creator, "conectix", 8) ||
+            be32_to_cpu(footer->type) != VHD_FIXED) {
             error_setg(errp, "invalid VPC image");
             ret = -EINVAL;
             goto fail;

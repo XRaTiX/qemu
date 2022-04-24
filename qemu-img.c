@@ -25,7 +25,8 @@
 #include "qemu/osdep.h"
 #include <getopt.h>
 
-#include "qemu-common.h"
+#include "qemu/help-texts.h"
+#include "qemu/qemu-progress.h"
 #include "qemu-version.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-block-core.h"
@@ -42,6 +43,7 @@
 #include "qemu/module.h"
 #include "qemu/sockets.h"
 #include "qemu/units.h"
+#include "qemu/memalign.h"
 #include "qom/object_interfaces.h"
 #include "sysemu/block-backend.h"
 #include "block/block_int.h"
@@ -98,7 +100,8 @@ static void format_print(void *opaque, const char *name)
     printf(" %s", name);
 }
 
-static void QEMU_NORETURN GCC_FMT_ATTR(1, 2) error_exit(const char *fmt, ...)
+static G_NORETURN G_GNUC_PRINTF(1, 2)
+void error_exit(const char *fmt, ...)
 {
     va_list ap;
 
@@ -110,18 +113,21 @@ static void QEMU_NORETURN GCC_FMT_ATTR(1, 2) error_exit(const char *fmt, ...)
     exit(EXIT_FAILURE);
 }
 
-static void QEMU_NORETURN missing_argument(const char *option)
+static G_NORETURN
+void missing_argument(const char *option)
 {
     error_exit("missing argument for option '%s'", option);
 }
 
-static void QEMU_NORETURN unrecognized_option(const char *option)
+static G_NORETURN
+void unrecognized_option(const char *option)
 {
     error_exit("unrecognized option '%s'", option);
 }
 
 /* Please keep in synch with docs/tools/qemu-img.rst */
-static void QEMU_NORETURN help(void)
+static G_NORETURN
+void help(void)
 {
     const char *help_msg =
            QEMU_IMG_VERSION
@@ -283,7 +289,7 @@ static QemuOptsList qemu_source_opts = {
     },
 };
 
-static int GCC_FMT_ATTR(2, 3) qprintf(bool quiet, const char *fmt, ...)
+static int G_GNUC_PRINTF(2, 3) qprintf(bool quiet, const char *fmt, ...)
 {
     int ret = 0;
     if (!quiet) {
@@ -902,7 +908,7 @@ static void common_block_job_cb(void *opaque, int ret)
 static void run_block_job(BlockJob *job, Error **errp)
 {
     uint64_t progress_current, progress_total;
-    AioContext *aio_context = blk_get_aio_context(job->blk);
+    AioContext *aio_context = block_job_get_aio_context(job);
     int ret = 0;
 
     aio_context_acquire(aio_context);
@@ -1171,19 +1177,34 @@ static int is_allocated_sectors(const uint8_t *buf, int n, int *pnum,
         }
     }
 
+    if (i == n) {
+        /*
+         * The whole buf is the same.
+         * No reason to split it into chunks, so return now.
+         */
+        *pnum = i;
+        return !is_zero;
+    }
+
     tail = (sector_num + i) & (alignment - 1);
     if (tail) {
         if (is_zero && i <= tail) {
-            /* treat unallocated areas which only consist
-             * of a small tail as allocated. */
+            /*
+             * For sure next sector after i is data, and it will rewrite this
+             * tail anyway due to RMW. So, let's just write data now.
+             */
             is_zero = false;
         }
         if (!is_zero) {
-            /* align up end offset of allocated areas. */
+            /* If possible, align up end offset of allocated areas. */
             i += alignment - tail;
             i = MIN(i, n);
         } else {
-            /* align down end offset of zero areas. */
+            /*
+             * For sure next sector after i is data, and it will rewrite this
+             * tail anyway due to RMW. Better is avoid RMW and write zeroes up
+             * to aligned bound.
+             */
             i -= tail;
         }
     }
@@ -3289,11 +3310,11 @@ static int img_snapshot(int argc, char **argv)
     char *filename, *snapshot_name = NULL;
     int c, ret = 0, bdrv_oflags;
     int action = 0;
-    qemu_timeval tv;
     bool quiet = false;
     Error *err = NULL;
     bool image_opts = false;
     bool force_share = false;
+    int64_t rt;
 
     bdrv_oflags = BDRV_O_RDWR;
     /* Parse commandline parameters */
@@ -3390,9 +3411,9 @@ static int img_snapshot(int argc, char **argv)
         memset(&sn, 0, sizeof(sn));
         pstrcpy(sn.name, sizeof(sn.name), snapshot_name);
 
-        qemu_gettimeofday(&tv);
-        sn.date_sec = tv.tv_sec;
-        sn.date_nsec = tv.tv_usec * 1000;
+        rt = g_get_real_time();
+        sn.date_sec = rt / G_USEC_PER_SEC;
+        sn.date_nsec = (rt % G_USEC_PER_SEC) * 1000;
 
         ret = bdrv_snapshot_create(bs, &sn);
         if (ret) {
@@ -5426,7 +5447,7 @@ int main(int argc, char **argv)
         exit(1);
     }
     trace_init_file();
-    qemu_set_log(LOG_TRACE);
+    qemu_set_log(LOG_TRACE, &error_fatal);
 
     /* find the command */
     for (cmd = img_cmds; cmd->name != NULL; cmd++) {

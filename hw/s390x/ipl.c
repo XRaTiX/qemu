@@ -13,7 +13,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
 #include "sysemu/reset.h"
@@ -28,16 +27,21 @@
 #include "hw/s390x/css.h"
 #include "hw/s390x/ebcdic.h"
 #include "hw/s390x/pv.h"
+#include "hw/scsi/scsi.h"
+#include "hw/virtio/virtio-net.h"
 #include "ipl.h"
 #include "qemu/error-report.h"
 #include "qemu/config-file.h"
 #include "qemu/cutils.h"
 #include "qemu/option.h"
+#include "standard-headers/linux/virtio_ids.h"
 #include "exec/exec-all.h"
 
 #define KERN_IMAGE_START                0x010000UL
 #define LINUX_MAGIC_ADDR                0x010008UL
+#define KERN_PARM_AREA_SIZE_ADDR        0x010430UL
 #define KERN_PARM_AREA                  0x010480UL
+#define LEGACY_KERN_PARM_AREA_SIZE      0x000380UL
 #define INITRD_START                    0x800000UL
 #define INITRD_PARM_START               0x010408UL
 #define PARMFILE_START                  0x001000UL
@@ -107,6 +111,21 @@ static uint64_t bios_translate_addr(void *opaque, uint64_t srcaddr)
      * we can simply add the destination address for the final location
      */
     return srcaddr + dstaddr;
+}
+
+static uint64_t get_max_kernel_cmdline_size(void)
+{
+    uint64_t *size_ptr = rom_ptr(KERN_PARM_AREA_SIZE_ADDR, sizeof(*size_ptr));
+
+    if (size_ptr) {
+        uint64_t size;
+
+        size = be64_to_cpu(*size_ptr);
+        if (size) {
+            return size;
+        }
+    }
+    return LEGACY_KERN_PARM_AREA_SIZE;
 }
 
 static void s390_ipl_realize(DeviceState *dev, Error **errp)
@@ -190,10 +209,22 @@ static void s390_ipl_realize(DeviceState *dev, Error **errp)
          * loader) and it won't work. For this case we force it to 0x10000, too.
          */
         if (pentry == KERN_IMAGE_START || pentry == 0x800) {
-            char *parm_area = rom_ptr(KERN_PARM_AREA, strlen(ipl->cmdline) + 1);
+            size_t cmdline_size = strlen(ipl->cmdline) + 1;
+            char *parm_area = rom_ptr(KERN_PARM_AREA, cmdline_size);
+
             ipl->start_addr = KERN_IMAGE_START;
             /* Overwrite parameters in the kernel image, which are "rom" */
             if (parm_area) {
+                uint64_t max_cmdline_size = get_max_kernel_cmdline_size();
+
+                if (cmdline_size > max_cmdline_size) {
+                    error_setg(errp,
+                               "kernel command line exceeds maximum size:"
+                               " %zu > %" PRIu64,
+                               cmdline_size, max_cmdline_size);
+                    return;
+                }
+
                 strcpy(parm_area, ipl->cmdline);
             }
         } else {
@@ -347,14 +378,18 @@ static CcwDevice *s390_get_ccw_device(DeviceState *dev_st, int *devtype)
                 object_dynamic_cast(OBJECT(dev_st),
                                     TYPE_SCSI_DEVICE);
             if (sd) {
-                SCSIBus *bus = scsi_bus_from_device(sd);
-                VirtIOSCSI *vdev = container_of(bus, VirtIOSCSI, bus);
-                VirtIOSCSICcw *scsi_ccw = container_of(vdev, VirtIOSCSICcw,
-                                                       vdev);
-
-                ccw_dev = (CcwDevice *)object_dynamic_cast(OBJECT(scsi_ccw),
-                                                           TYPE_CCW_DEVICE);
-                tmp_dt = CCW_DEVTYPE_SCSI;
+                SCSIBus *sbus = scsi_bus_from_device(sd);
+                VirtIODevice *vdev = (VirtIODevice *)
+                    object_dynamic_cast(OBJECT(sbus->qbus.parent),
+                                        TYPE_VIRTIO_DEVICE);
+                if (vdev) {
+                    ccw_dev = (CcwDevice *)
+                        object_dynamic_cast(OBJECT(qdev_get_parent_bus(DEVICE(vdev))->parent),
+                                            TYPE_CCW_DEVICE);
+                    if (ccw_dev) {
+                        tmp_dt = CCW_DEVTYPE_SCSI;
+                    }
+                }
             }
         }
     }

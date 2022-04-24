@@ -12,7 +12,11 @@ softmmu_ss.add(files(
   'kbd-state.c',
   'keymaps.c',
   'qemu-pixman.c',
+  'util.c',
 ))
+if dbus_display
+  softmmu_ss.add(files('dbus-module.c'))
+endif
 softmmu_ss.add([spice_headers, files('spice-module.c')])
 softmmu_ss.add(when: spice_protocol, if_true: files('vdagent.c'))
 
@@ -64,6 +68,30 @@ if config_host.has_key('CONFIG_OPENGL') and gbm.found()
   ui_modules += {'egl-headless' : egl_headless_ss}
 endif
 
+if dbus_display
+  dbus_ss = ss.source_set()
+  dbus_display1 = custom_target('dbus-display gdbus-codegen',
+                                output: ['dbus-display1.h', 'dbus-display1.c'],
+                                input: files('dbus-display1.xml'),
+                                command: [config_host['GDBUS_CODEGEN'],
+                                          '@INPUT@',
+                                          '--glib-min-required', '2.64',
+                                          '--output-directory', meson.current_build_dir(),
+                                          '--interface-prefix', 'org.qemu.',
+                                          '--c-namespace', 'QemuDBus',
+                                          '--generate-c-code', '@BASENAME@'])
+  dbus_ss.add(when: [gio, pixman, opengl, 'CONFIG_GIO'],
+              if_true: [files(
+                'dbus-chardev.c',
+                'dbus-clipboard.c',
+                'dbus-console.c',
+                'dbus-error.c',
+                'dbus-listener.c',
+                'dbus.c',
+              ), dbus_display1])
+  ui_modules += {'dbus' : dbus_ss}
+endif
+
 if gtk.found()
   softmmu_ss.add(when: 'CONFIG_WIN32', if_true: files('win32-kbd-hook.c'))
 
@@ -89,7 +117,7 @@ if sdl.found()
   ui_modules += {'sdl' : sdl_ss}
 endif
 
-if config_host.has_key('CONFIG_SPICE')
+if spice.found()
   spice_core_ss = ss.source_set()
   spice_core_ss.add(spice, pixman, files(
     'spice-core.c',
@@ -99,7 +127,7 @@ if config_host.has_key('CONFIG_SPICE')
   ui_modules += {'spice-core' : spice_core_ss}
 endif
 
-if config_host.has_key('CONFIG_SPICE') and config_host.has_key('CONFIG_GIO')
+if spice.found() and config_host.has_key('CONFIG_GIO')
   spice_ss = ss.source_set()
   spice_ss.add(spice, gio, pixman, files('spice-app.c'))
   ui_modules += {'spice-app': spice_ss}

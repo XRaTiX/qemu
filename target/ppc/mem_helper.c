@@ -25,7 +25,6 @@
 #include "exec/helper-proto.h"
 #include "helper_regs.h"
 #include "exec/cpu_ldst.h"
-#include "tcg/tcg.h"
 #include "internal.h"
 #include "qemu/atomic128.h"
 
@@ -33,7 +32,7 @@
 
 static inline bool needs_byteswap(const CPUPPCState *env)
 {
-#if defined(TARGET_WORDS_BIGENDIAN)
+#if TARGET_BIG_ENDIAN
   return msr_le;
 #else
   return !msr_le;
@@ -462,7 +461,7 @@ uint32_t helper_stqcx_be_parallel(CPUPPCState *env, target_ulong addr,
 
 /*****************************************************************************/
 /* Altivec extension helpers */
-#if defined(HOST_WORDS_BIGENDIAN)
+#if HOST_BIG_ENDIAN
 #define HI_IDX 0
 #define LO_IDX 1
 #else

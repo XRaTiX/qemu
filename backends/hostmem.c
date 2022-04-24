@@ -19,6 +19,7 @@
 #include "qemu/config-file.h"
 #include "qom/object_interfaces.h"
 #include "qemu/mmap-alloc.h"
+#include "qemu/madvise.h"
 
 #ifdef CONFIG_NUMA
 #include <numaif.h>
@@ -318,7 +319,7 @@ size_t host_memory_backend_pagesize(HostMemoryBackend *memdev)
 #else
 size_t host_memory_backend_pagesize(HostMemoryBackend *memdev)
 {
-    return qemu_real_host_page_size;
+    return qemu_real_host_page_size();
 }
 #endif
 

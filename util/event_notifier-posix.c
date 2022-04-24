@@ -11,7 +11,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/cutils.h"
 #include "qemu/event_notifier.h"
 #include "qemu/main-loop.h"
@@ -97,6 +96,11 @@ void event_notifier_cleanup(EventNotifier *e)
 int event_notifier_get_fd(const EventNotifier *e)
 {
     return e->rfd;
+}
+
+int event_notifier_get_wfd(const EventNotifier *e)
+{
+    return e->wfd;
 }
 
 int event_notifier_set(EventNotifier *e)

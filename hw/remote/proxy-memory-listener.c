@@ -7,7 +7,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 
 #include "qemu/compiler.h"
 #include "qemu/int128.h"
@@ -16,6 +15,7 @@
 #include "exec/cpu-common.h"
 #include "exec/ram_addr.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "hw/remote/mpqemu-link.h"
 #include "hw/remote/proxy-memory-listener.h"
 

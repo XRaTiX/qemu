@@ -23,10 +23,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
+#include "qemu/help-texts.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
 #include "exec/cpu-common.h"
+#include "exec/page-vary.h"
 #include "hw/qdev-properties.h"
 #include "qapi/compat-policy.h"
 #include "qapi/error.h"
@@ -36,6 +37,7 @@
 #include "qemu-version.h"
 #include "qemu/cutils.h"
 #include "qemu/help_option.h"
+#include "qemu/hw-version.h"
 #include "qemu/uuid.h"
 #include "sysemu/reset.h"
 #include "sysemu/runstate.h"
@@ -123,9 +125,11 @@
 #include "qapi/qapi-visit-qom.h"
 #include "qapi/qapi-commands-ui.h"
 #include "qapi/qmp/qdict.h"
+#include "block/qdict.h"
 #include "qapi/qmp/qerror.h"
 #include "sysemu/iothread.h"
 #include "qemu/guest-random.h"
+#include "qemu/keyval.h"
 
 #include "config-host.h"
 
@@ -144,6 +148,12 @@ typedef struct ObjectOption {
     QTAILQ_ENTRY(ObjectOption) next;
 } ObjectOption;
 
+typedef struct DeviceOption {
+    QDict *opts;
+    Location loc;
+    QTAILQ_ENTRY(DeviceOption) next;
+} DeviceOption;
+
 static const char *cpu_option;
 static const char *mem_path;
 static const char *incoming;
@@ -151,6 +161,7 @@ static const char *loadvm;
 static const char *accelerators;
 static QDict *machine_opts_dict;
 static QTAILQ_HEAD(, ObjectOption) object_opts = QTAILQ_HEAD_INITIALIZER(object_opts);
+static QTAILQ_HEAD(, DeviceOption) device_opts = QTAILQ_HEAD_INITIALIZER(device_opts);
 static ram_addr_t maxram_size;
 static uint64_t ram_slots;
 static int display_remote;
@@ -494,19 +505,37 @@ const char *qemu_get_vm_name(void)
     return qemu_name;
 }
 
-static int default_driver_check(void *opaque, QemuOpts *opts, Error **errp)
+static void default_driver_disable(const char *driver)
 {
-    const char *driver = qemu_opt_get(opts, "driver");
     int i;
 
-    if (!driver)
-        return 0;
+    if (!driver) {
+        return;
+    }
+
     for (i = 0; i < ARRAY_SIZE(default_list); i++) {
         if (strcmp(default_list[i].driver, driver) != 0)
             continue;
         *(default_list[i].flag) = 0;
     }
+}
+
+static int default_driver_check(void *opaque, QemuOpts *opts, Error **errp)
+{
+    const char *driver = qemu_opt_get(opts, "driver");
+
+    default_driver_disable(driver);
     return 0;
+}
+
+static void default_driver_check_json(void)
+{
+    DeviceOption *opt;
+
+    QTAILQ_FOREACH(opt, &device_opts, next) {
+        const char *driver = qdict_get_try_str(opt->opts, "driver");
+        default_driver_disable(driver);
+    }
 }
 
 static int parse_name(void *opaque, QemuOpts *opts, Error **errp)
@@ -702,6 +731,9 @@ static QemuOptsList qemu_smp_opts = {
             .name = "dies",
             .type = QEMU_OPT_NUMBER,
         }, {
+            .name = "clusters",
+            .type = QEMU_OPT_NUMBER,
+        }, {
             .name = "cores",
             .type = QEMU_OPT_NUMBER,
         }, {
@@ -807,7 +839,7 @@ static void help(int exitcode)
     version();
     printf("usage: %s [options] [disk_image]\n\n"
            "'disk_image' is a raw hard disk image for IDE hard disk 0\n\n",
-            error_get_progname());
+            g_get_prgname());
 
 #define DEF(option, opt_arg, opt_enum, opt_help, arch_mask)    \
     if ((arch_mask) & arch_type)                               \
@@ -1311,6 +1343,7 @@ static void qemu_disable_default_devices(void)
 {
     MachineClass *machine_class = MACHINE_GET_CLASS(current_machine);
 
+    default_driver_check_json();
     qemu_opts_foreach(qemu_find_opts("device"),
                       default_driver_check, NULL, NULL);
     qemu_opts_foreach(qemu_find_opts("global"),
@@ -1912,7 +1945,7 @@ static void qemu_create_early_backends(void)
                      "for SDL, ignoring option");
     }
     if (dpy.has_window_close && !use_gtk && !use_sdl) {
-        error_report("-no-quit is only valid for GTK and SDL, "
+        error_report("window-close is only valid for GTK and SDL, "
                      "ignoring option");
     }
 
@@ -1931,7 +1964,7 @@ static void qemu_create_early_backends(void)
     object_option_foreach_add(object_create_early);
 
     /* spice needs the timers to be initialized by this point */
-    /* spice must initialize before audio as it changes the default auiodev */
+    /* spice must initialize before audio as it changes the default audiodev */
     /* spice must initialize before chardevs (for spicevmc and spiceport) */
     qemu_spice.init();
 
@@ -2529,19 +2562,16 @@ static void qemu_process_early_options(void)
 #endif
 
     /* Open the logfile at this point and set the log mask if necessary.  */
-    if (log_file) {
-        qemu_set_log_filename(log_file, &error_fatal);
-    }
-    if (log_mask) {
-        int mask;
-        mask = qemu_str_to_log_mask(log_mask);
-        if (!mask) {
-            qemu_print_log_usage(stdout);
-            exit(1);
+    {
+        int mask = 0;
+        if (log_mask) {
+            mask = qemu_str_to_log_mask(log_mask);
+            if (!mask) {
+                qemu_print_log_usage(stdout);
+                exit(1);
+            }
         }
-        qemu_set_log(mask);
-    } else {
-        qemu_set_log(0);
+        qemu_set_log_filename_flags(log_file, mask, &error_fatal);
     }
 
     qemu_add_default_firmwarepath();
@@ -2637,6 +2667,8 @@ static void qemu_init_board(void)
 
 static void qemu_create_cli_devices(void)
 {
+    DeviceOption *opt;
+
     soundhw_init();
 
     qemu_opts_foreach(qemu_find_opts("fw_cfg"),
@@ -2652,6 +2684,20 @@ static void qemu_create_cli_devices(void)
     rom_set_order_override(FW_CFG_ORDER_OVERRIDE_DEVICE);
     qemu_opts_foreach(qemu_find_opts("device"),
                       device_init_func, NULL, &error_fatal);
+    QTAILQ_FOREACH(opt, &device_opts, next) {
+        DeviceState *dev;
+        loc_push_restore(&opt->loc);
+        /*
+         * TODO Eventually we should call qmp_device_add() here to make sure it
+         * behaves the same, but QMP still has to accept incorrectly typed
+         * options until libvirt is fixed and we want to be strict on the CLI
+         * from the start, so call qdev_device_add_from_qdict() directly for
+         * now.
+         */
+        dev = qdev_device_add_from_qdict(opt->opts, true, &error_fatal);
+        object_unref(OBJECT(dev));
+        loc_pop(&opt->loc);
+    }
     rom_reset_order_override();
 }
 
@@ -2769,10 +2815,7 @@ void qemu_init(int argc, char **argv, char **envp)
     error_init(argv[0]);
     qemu_init_exec_dir(argv[0]);
 
-#ifdef CONFIG_MODULES
-    module_init_info(qemu_modinfo);
-    module_allow_arch(TARGET_NAME);
-#endif
+    qemu_init_arch_modules();
 
     qemu_init_subsystems();
 
@@ -2844,7 +2887,9 @@ void qemu_init(int argc, char **argv, char **envp)
                     break;
                 }
             case QEMU_OPTION_drive:
-                if (drive_def(optarg) == NULL) {
+                opts = qemu_opts_parse_noisily(qemu_find_opts("drive"),
+                                               optarg, false);
+                if (opts == NULL) {
                     exit(1);
                 }
                 break;
@@ -3216,6 +3261,7 @@ void qemu_init(int argc, char **argv, char **envp)
                     error_report("only one watchdog option may be given");
                     exit(1);
                 }
+                warn_report("-watchdog is deprecated; use -device instead.");
                 watchdog = optarg;
                 break;
             case QEMU_OPTION_action:
@@ -3224,12 +3270,12 @@ void qemu_init(int argc, char **argv, char **envp)
                      exit(1);
                 }
                 break;
-            case QEMU_OPTION_watchdog_action:
-                if (select_watchdog_action(optarg) == -1) {
-                    error_report("unknown -watchdog-action parameter");
-                    exit(1);
-                }
+            case QEMU_OPTION_watchdog_action: {
+                QemuOpts *opts;
+                opts = qemu_opts_create(qemu_find_opts("action"), NULL, 0, &error_abort);
+                qemu_opt_set(opts, "watchdog", optarg, &error_abort);
                 break;
+            }
             case QEMU_OPTION_parallel:
                 add_device_config(DEV_PARALLEL, optarg);
                 default_parallel = 0;
@@ -3256,12 +3302,6 @@ void qemu_init(int argc, char **argv, char **envp)
                 ctrl_grab = 1;
                 warn_report("-ctrl-grab is deprecated, please use "
                             "-display sdl,grab-mod=rctrl instead.");
-                break;
-            case QEMU_OPTION_no_quit:
-                dpy.has_window_close = true;
-                dpy.window_close = false;
-                warn_report("-no-quit is deprecated, please use "
-                            "-display ...,window-close=off instead.");
                 break;
             case QEMU_OPTION_sdl:
                 warn_report("-sdl is deprecated, use -display sdl instead.");
@@ -3352,9 +3392,18 @@ void qemu_init(int argc, char **argv, char **envp)
                 add_device_config(DEV_USB, optarg);
                 break;
             case QEMU_OPTION_device:
-                if (!qemu_opts_parse_noisily(qemu_find_opts("device"),
-                                             optarg, true)) {
-                    exit(1);
+                if (optarg[0] == '{') {
+                    QObject *obj = qobject_from_json(optarg, &error_fatal);
+                    DeviceOption *opt = g_new0(DeviceOption, 1);
+                    opt->opts = qobject_to(QDict, obj);
+                    loc_save(&opt->loc);
+                    assert(opt->opts != NULL);
+                    QTAILQ_INSERT_TAIL(&device_opts, opt, next);
+                } else {
+                    if (!qemu_opts_parse_noisily(qemu_find_opts("device"),
+                                                 optarg, true)) {
+                        exit(1);
+                    }
                 }
                 break;
             case QEMU_OPTION_smp:
@@ -3488,6 +3537,7 @@ void qemu_init(int argc, char **argv, char **envp)
             case QEMU_OPTION_readconfig:
                 qemu_read_config_file(optarg, qemu_parse_config_group, &error_fatal);
                 break;
+#ifdef CONFIG_SPICE
             case QEMU_OPTION_spice:
                 olist = qemu_find_opts_err("spice", NULL);
                 if (!olist) {
@@ -3500,6 +3550,7 @@ void qemu_init(int argc, char **argv, char **envp)
                 }
                 display_remote++;
                 break;
+#endif
             case QEMU_OPTION_writeconfig:
                 {
                     FILE *fp;
@@ -3716,6 +3767,7 @@ void qemu_init(int argc, char **argv, char **envp)
 
     if (vmstate_dump_file) {
         /* dump and exit */
+        module_load_qom_all();
         dump_vmstate_json_to_file(vmstate_dump_file);
         exit(0);
     }

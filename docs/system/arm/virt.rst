@@ -96,14 +96,17 @@ gic-version
   Valid values are:
 
   ``2``
-    GICv2
+    GICv2. Note that this limits the number of CPUs to 8.
   ``3``
-    GICv3
+    GICv3. This allows up to 512 CPUs.
+  ``4``
+    GICv4. Requires ``virtualization`` to be ``on``; allows up to 317 CPUs.
   ``host``
     Use the same GIC version the host provides, when using KVM
   ``max``
     Use the best GIC version possible (same as host when using KVM;
-    currently same as ``3``` for TCG, but this may change in future)
+    with TCG this is currently ``3`` if ``virtualization`` is ``off`` and
+    ``4`` if ``virtualization`` is ``on``, but this may change in future)
 
 its
   Set ``on``/``off`` to enable/disable ITS instantiation. The default is ``on``
@@ -120,6 +123,14 @@ iommu
 ras
   Set ``on``/``off`` to enable/disable reporting host memory errors to a guest
   using ACPI and guest external abort exceptions. The default is off.
+
+dtb-kaslr-seed
+  Set ``on``/``off`` to pass a random seed via the guest dtb
+  kaslr-seed node (in both "/chosen" and /secure-chosen) to use
+  for features like address space randomisation. The default is
+  ``on``. You will want to disable it if your trusted boot chain will
+  verify the DTB it is passed. It would be the responsibility of the
+  firmware to come up with a seed and pass it on if it wants to.
 
 Linux guest kernel configuration
 """"""""""""""""""""""""""""""""

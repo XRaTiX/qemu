@@ -382,13 +382,111 @@ Along with many other images, the ``centos8`` image is defined in a Dockerfile
 in ``tests/docker/dockerfiles/``, called ``centos8.docker``. ``make docker-help``
 command will list all the available images.
 
-To add a new image, simply create a new ``.docker`` file under the
-``tests/docker/dockerfiles/`` directory.
-
 A ``.pre`` script can be added beside the ``.docker`` file, which will be
 executed before building the image under the build context directory. This is
 mainly used to do necessary host side setup. One such setup is ``binfmt_misc``,
 for example, to make qemu-user powered cross build containers work.
+
+Most of the existing Dockerfiles were written by hand, simply by creating a
+a new ``.docker`` file under the ``tests/docker/dockerfiles/`` directory.
+This has led to an inconsistent set of packages being present across the
+different containers.
+
+Thus going forward, QEMU is aiming to automatically generate the Dockerfiles
+using the ``lcitool`` program provided by the ``libvirt-ci`` project:
+
+  https://gitlab.com/libvirt/libvirt-ci
+
+In that project, there is a ``mappings.yml`` file defining the distro native
+package names for a wide variety of third party projects. This is processed
+in combination with a project defined list of build pre-requisites to determine
+the list of native packages to install on each distribution. This can be used
+to generate dockerfiles, VM package lists and Cirrus CI variables needed to
+setup build environments across OS distributions with a consistent set of
+packages present.
+
+When preparing a patch series that adds a new build pre-requisite to QEMU,
+updates to various lcitool data files may be required.
+
+
+Adding new build pre-requisites
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In the simple case where the pre-requisite is already known to ``libvirt-ci``
+the following steps are needed
+
+ * Edit ``tests/lcitool/projects/qemu.yml`` and add the pre-requisite
+
+ * Run ``make lcitool-refresh`` to re-generate all relevant build environment
+   manifests
+
+In some cases ``libvirt-ci`` will not know about the build pre-requisite and
+thus some extra preparation steps will be required first
+
+ * Fork the ``libvirt-ci`` project on gitlab
+
+ * Edit the ``mappings.yml`` change to add an entry for the new build
+   prerequisite, listing its native package name on as many OS distros
+   as practical.
+
+ * Commit the ``mappings.yml`` change and submit a merge request to
+   the ``libvirt-ci`` project, noting in the description that this
+   is a new build pre-requisite desired for use with QEMU
+
+ * CI pipeline will run to validate that the changes to ``mappings.yml``
+   are correct, by attempting to install the newly listed package on
+   all OS distributions supported by ``libvirt-ci``.
+
+ * Once the merge request is accepted, go back to QEMU and update
+   the ``libvirt-ci`` submodule to point to a commit that contains
+   the ``mappings.yml`` update.
+
+
+Adding new OS distros
+^^^^^^^^^^^^^^^^^^^^^
+
+In some cases ``libvirt-ci`` will not know about the OS distro that is
+desired to be tested. Before adding a new OS distro, discuss the proposed
+addition:
+
+ * Send a mail to qemu-devel, copying people listed in the
+   MAINTAINERS file for ``Build and test automation``.
+
+   There are limited CI compute resources available to QEMU, so the
+   cost/benefit tradeoff of adding new OS distros needs to be considered.
+
+ * File an issue at https://gitlab.com/libvirt/libvirt-ci/-/issues
+   pointing to the qemu-devel mail thread in the archives.
+
+   This alerts other people who might be interested in the work
+   to avoid duplication, as well as to get feedback from libvirt-ci
+   maintainers on any tips to ease the addition
+
+Assuming there is agreement to add a new OS distro then
+
+ * Fork the ``libvirt-ci`` project on gitlab
+
+ * Add metadata under ``guests/lcitool/lcitool/ansible/group_vars/``
+   for the new OS distro. There might be code changes required if
+   the OS distro uses a package format not currently known. The
+   ``libvirt-ci`` maintainers can advise on this when the issue
+   is file.
+
+ * Edit the ``mappings.yml`` change to update all the existing package
+   entries, providing details of the new OS distro
+
+ * Commit the ``mappings.yml`` change and submit a merge request to
+   the ``libvirt-ci`` project, noting in the description that this
+   is a new build pre-requisite desired for use with QEMU
+
+ * CI pipeline will run to validate that the changes to ``mappings.yml``
+   are correct, by attempting to install the newly listed package on
+   all OS distributions supported by ``libvirt-ci``.
+
+ * Once the merge request is accepted, go back to QEMU and update
+   the ``libvirt-ci`` submodule to point to a commit that contains
+   the ``mappings.yml`` update.
+
 
 Tests
 ~~~~~
@@ -539,6 +637,44 @@ The full set of annotations can be found here:
 
 https://github.com/llvm/llvm-project/blob/master/compiler-rt/lib/tsan/rtl/tsan_interface_ann.cpp
 
+docker-binfmt-image-debian-% targets
+------------------------------------
+
+It is possible to combine Debian's bootstrap scripts with a configured
+``binfmt_misc`` to bootstrap a number of Debian's distros including
+experimental ports not yet supported by a released OS. This can
+simplify setting up a rootfs by using docker to contain the foreign
+rootfs rather than manually invoking chroot.
+
+Setting up ``binfmt_misc``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can use the script ``qemu-binfmt-conf.sh`` to configure a QEMU
+user binary to automatically run binaries for the foreign
+architecture. While the scripts will try their best to work with
+dynamically linked QEMU's a statically linked one will present less
+potential complications when copying into the docker image. Modern
+kernels support the ``F`` (fix binary) flag which will open the QEMU
+executable on setup and avoids the need to find and re-open in the
+chroot environment. This is triggered with the ``--persistent`` flag.
+
+Example invocation
+~~~~~~~~~~~~~~~~~~
+
+For example to setup the HPPA ports builds of Debian::
+
+  make docker-binfmt-image-debian-sid-hppa \
+    DEB_TYPE=sid DEB_ARCH=hppa \
+    DEB_URL=http://ftp.ports.debian.org/debian-ports/ \
+    DEB_KEYRING=/usr/share/keyrings/debian-ports-archive-keyring.gpg \
+    EXECUTABLE=(pwd)/qemu-hppa V=1
+
+The ``DEB_`` variables are substitutions used by
+``debian-boostrap.pre`` which is called to do the initial debootstrap
+of the rootfs before it is copied into the container. The second stage
+is run as part of the build. The final image will be tagged as
+``qemu/debian-sid-hppa``.
+
 VM testing
 ----------
 
@@ -564,11 +700,11 @@ exploiting a QEMU security bug to compromise the host.
 QEMU binaries
 ~~~~~~~~~~~~~
 
-By default, qemu-system-x86_64 is searched in $PATH to run the guest. If there
-isn't one, or if it is older than 2.10, the test won't work. In this case,
+By default, ``qemu-system-x86_64`` is searched in $PATH to run the guest. If
+there isn't one, or if it is older than 2.10, the test won't work. In this case,
 provide the QEMU binary in env var: ``QEMU=/path/to/qemu-2.10+``.
 
-Likewise the path to qemu-img can be set in QEMU_IMG environment variable.
+Likewise the path to ``qemu-img`` can be set in QEMU_IMG environment variable.
 
 Make jobs
 ~~~~~~~~~
@@ -650,20 +786,19 @@ supported. To start the fuzzer, run
 
   tests/image-fuzzer/runner.py -c '[["qemu-img", "info", "$test_img"]]' /tmp/test qcow2
 
-Alternatively, some command different from "qemu-img info" can be tested, by
+Alternatively, some command different from ``qemu-img info`` can be tested, by
 changing the ``-c`` option.
 
-Acceptance tests using the Avocado Framework
---------------------------------------------
+Integration tests using the Avocado Framework
+---------------------------------------------
 
-The ``tests/acceptance`` directory hosts functional tests, also known
-as acceptance level tests.  They're usually higher level tests, and
-may interact with external resources and with various guest operating
-systems.
+The ``tests/avocado`` directory hosts integration tests. They're usually
+higher level tests, and may interact with external resources and with
+various guest operating systems.
 
 These tests are written using the Avocado Testing Framework (which must
 be installed separately) in conjunction with a the ``avocado_qemu.Test``
-class, implemented at ``tests/acceptance/avocado_qemu``.
+class, implemented at ``tests/avocado/avocado_qemu``.
 
 Tests based on ``avocado_qemu.Test`` can easily:
 
@@ -695,11 +830,11 @@ Tests based on ``avocado_qemu.Test`` can easily:
 Running tests
 ~~~~~~~~~~~~~
 
-You can run the acceptance tests simply by executing:
+You can run the avocado tests simply by executing:
 
 .. code::
 
-  make check-acceptance
+  make check-avocado
 
 This involves the automatic creation of Python virtual environment
 within the build tree (at ``tests/venv``) which will have all the
@@ -714,12 +849,12 @@ specific version, they may be on packages named ``python3-venv`` and
 ``python3-pip``.
 
 It is also possible to run tests based on tags using the
-``make check-acceptance`` command and the ``AVOCADO_TAGS`` environment
+``make check-avocado`` command and the ``AVOCADO_TAGS`` environment
 variable:
 
 .. code::
 
-   make check-acceptance AVOCADO_TAGS=quick
+   make check-avocado AVOCADO_TAGS=quick
 
 Note that tags separated with commas have an AND behavior, while tags
 separated by spaces have an OR behavior. For more information on Avocado
@@ -728,31 +863,31 @@ tags, see:
  https://avocado-framework.readthedocs.io/en/latest/guides/user/chapters/tags.html
 
 To run a single test file, a couple of them, or a test within a file
-using the ``make check-acceptance`` command, set the ``AVOCADO_TESTS``
+using the ``make check-avocado`` command, set the ``AVOCADO_TESTS``
 environment variable with the test files or test names. To run all
 tests from a single file, use:
 
  .. code::
 
-  make check-acceptance AVOCADO_TESTS=$FILEPATH
+  make check-avocado AVOCADO_TESTS=$FILEPATH
 
 The same is valid to run tests from multiple test files:
 
  .. code::
 
-  make check-acceptance AVOCADO_TESTS='$FILEPATH1 $FILEPATH2'
+  make check-avocado AVOCADO_TESTS='$FILEPATH1 $FILEPATH2'
 
 To run a single test within a file, use:
 
  .. code::
 
-  make check-acceptance AVOCADO_TESTS=$FILEPATH:$TESTCLASS.$TESTNAME
+  make check-avocado AVOCADO_TESTS=$FILEPATH:$TESTCLASS.$TESTNAME
 
 The same is valid to run single tests from multiple test files:
 
  .. code::
 
-  make check-acceptance AVOCADO_TESTS='$FILEPATH1:$TESTCLASS1.$TESTNAME1 $FILEPATH2:$TESTCLASS2.$TESTNAME2'
+  make check-avocado AVOCADO_TESTS='$FILEPATH1:$TESTCLASS1.$TESTNAME1 $FILEPATH2:$TESTCLASS2.$TESTNAME2'
 
 The scripts installed inside the virtual environment may be used
 without an "activation".  For instance, the Avocado test runner
@@ -760,9 +895,9 @@ may be invoked by running:
 
  .. code::
 
-  tests/venv/bin/avocado run $OPTION1 $OPTION2 tests/acceptance/
+  tests/venv/bin/avocado run $OPTION1 $OPTION2 tests/avocado/
 
-Note that if ``make check-acceptance`` was not executed before, it is
+Note that if ``make check-avocado`` was not executed before, it is
 possible to create the Python virtual environment with the dependencies
 needed running:
 
@@ -775,20 +910,20 @@ a test file. To run tests from a single file within the build tree, use:
 
  .. code::
 
-  tests/venv/bin/avocado run tests/acceptance/$TESTFILE
+  tests/venv/bin/avocado run tests/avocado/$TESTFILE
 
 To run a single test within a test file, use:
 
  .. code::
 
-  tests/venv/bin/avocado run tests/acceptance/$TESTFILE:$TESTCLASS.$TESTNAME
+  tests/venv/bin/avocado run tests/avocado/$TESTFILE:$TESTCLASS.$TESTNAME
 
 Valid test names are visible in the output from any previous execution
-of Avocado or ``make check-acceptance``, and can also be queried using:
+of Avocado or ``make check-avocado``, and can also be queried using:
 
  .. code::
 
-  tests/venv/bin/avocado list tests/acceptance
+  tests/venv/bin/avocado list tests/avocado
 
 Manual Installation
 ~~~~~~~~~~~~~~~~~~~
@@ -806,16 +941,16 @@ Alternatively, follow the instructions on this link:
 Overview
 ~~~~~~~~
 
-The ``tests/acceptance/avocado_qemu`` directory provides the
+The ``tests/avocado/avocado_qemu`` directory provides the
 ``avocado_qemu`` Python module, containing the ``avocado_qemu.Test``
 class.  Here's a simple usage example:
 
 .. code::
 
-  from avocado_qemu import Test
+  from avocado_qemu import QemuSystemTest
 
 
-  class Version(Test):
+  class Version(QemuSystemTest):
       """
       :avocado: tags=quick
       """
@@ -860,10 +995,10 @@ and hypothetical example follows:
 
 .. code::
 
-  from avocado_qemu import Test
+  from avocado_qemu import QemuSystemTest
 
 
-  class MultipleMachines(Test):
+  class MultipleMachines(QemuSystemTest):
       def test_multiple_machines(self):
           first_machine = self.get_vm()
           second_machine = self.get_vm()
@@ -913,7 +1048,7 @@ like this:
           self.ssh_command('some_command_to_be_run_in_the_guest')
 
 Please refer to tests that use ``avocado_qemu.LinuxTest`` under
-``tests/acceptance`` for more examples.
+``tests/avocado`` for more examples.
 
 QEMUMachine
 ~~~~~~~~~~~
@@ -1204,7 +1339,7 @@ And remove any package you want with::
 
   pip uninstall <package_name>
 
-If you've used ``make check-acceptance``, the Python virtual environment where
+If you've used ``make check-avocado``, the Python virtual environment where
 Avocado is installed will be cleaned up as part of ``make check-clean``.
 
 .. _checktcg-ref:
@@ -1227,7 +1362,7 @@ for the architecture in question, for example::
 
   $(configure) --cross-cc-aarch64=aarch64-cc
 
-There is also a ``--cross-cc-flags-ARCH`` flag in case additional
+There is also a ``--cross-cc-cflags-ARCH`` flag in case additional
 compiler flags are needed to build for a given target.
 
 If you have the ability to run containers as the user the build system

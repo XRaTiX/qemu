@@ -11,7 +11,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "hw/ppc/spapr_numa.h"
 #include "hw/pci-host/spapr.h"
 #include "hw/ppc/fdt.h"
@@ -66,16 +65,41 @@ static const uint32_t *get_associativity(SpaprMachineState *spapr, int node_id)
     return spapr->FORM1_assoc_array[node_id];
 }
 
+/*
+ * Wrapper that returns node distance from ms->numa_state->nodes
+ * after handling edge cases where the distance might be absent.
+ */
+static int get_numa_distance(MachineState *ms, int src, int dst)
+{
+    NodeInfo *numa_info = ms->numa_state->nodes;
+    int ret = numa_info[src].distance[dst];
+
+    if (ret != 0) {
+        return ret;
+    }
+
+    /*
+     * In case QEMU adds a default NUMA single node when the user
+     * did not add any, or where the user did not supply distances,
+     * the distance will be absent (zero). Return local/remote
+     * distance in this case.
+     */
+    if (src == dst) {
+        return NUMA_DISTANCE_MIN;
+    }
+
+    return NUMA_DISTANCE_DEFAULT;
+}
+
 static bool spapr_numa_is_symmetrical(MachineState *ms)
 {
-    int src, dst;
     int nb_numa_nodes = ms->numa_state->num_nodes;
-    NodeInfo *numa_info = ms->numa_state->nodes;
+    int src, dst;
 
     for (src = 0; src < nb_numa_nodes; src++) {
         for (dst = src; dst < nb_numa_nodes; dst++) {
-            if (numa_info[src].distance[dst] !=
-                numa_info[dst].distance[src]) {
+            if (get_numa_distance(ms, src, dst) !=
+                get_numa_distance(ms, dst, src)) {
                 return false;
             }
         }
@@ -133,7 +157,6 @@ static uint8_t spapr_numa_get_numa_level(uint8_t distance)
 static void spapr_numa_define_FORM1_domains(SpaprMachineState *spapr)
 {
     MachineState *ms = MACHINE(spapr);
-    NodeInfo *numa_info = ms->numa_state->nodes;
     int nb_numa_nodes = ms->numa_state->num_nodes;
     int src, dst, i, j;
 
@@ -170,7 +193,7 @@ static void spapr_numa_define_FORM1_domains(SpaprMachineState *spapr)
              * The PPC kernel expects the associativity domains of node 0 to
              * be always 0, and this algorithm will grant that by default.
              */
-            uint8_t distance = numa_info[src].distance[dst];
+            uint8_t distance = get_numa_distance(ms, src, dst);
             uint8_t n_level = spapr_numa_get_numa_level(distance);
             uint32_t assoc_src;
 
@@ -407,12 +430,13 @@ int spapr_numa_write_assoc_lookup_arrays(SpaprMachineState *spapr, void *fdt,
     int max_distance_ref_points = get_max_dist_ref_points(spapr);
     int nb_numa_nodes = machine->numa_state->num_nodes;
     int nr_nodes = nb_numa_nodes ? nb_numa_nodes : 1;
-    uint32_t *int_buf, *cur_index, buf_len;
-    int ret, i;
+    g_autofree uint32_t *int_buf = NULL;
+    uint32_t *cur_index;
+    int i;
 
     /* ibm,associativity-lookup-arrays */
-    buf_len = (nr_nodes * max_distance_ref_points + 2) * sizeof(uint32_t);
-    cur_index = int_buf = g_malloc0(buf_len);
+    int_buf = g_new0(uint32_t, nr_nodes * max_distance_ref_points + 2);
+    cur_index = int_buf;
     int_buf[0] = cpu_to_be32(nr_nodes);
      /* Number of entries per associativity list */
     int_buf[1] = cpu_to_be32(max_distance_ref_points);
@@ -427,11 +451,9 @@ int spapr_numa_write_assoc_lookup_arrays(SpaprMachineState *spapr, void *fdt,
                sizeof(uint32_t) * max_distance_ref_points);
         cur_index += max_distance_ref_points;
     }
-    ret = fdt_setprop(fdt, offset, "ibm,associativity-lookup-arrays", int_buf,
-                      (cur_index - int_buf) * sizeof(uint32_t));
-    g_free(int_buf);
 
-    return ret;
+    return fdt_setprop(fdt, offset, "ibm,associativity-lookup-arrays",
+                       int_buf, (cur_index - int_buf) * sizeof(uint32_t));
 }
 
 static void spapr_numa_FORM1_write_rtas_dt(SpaprMachineState *spapr,
@@ -498,7 +520,6 @@ static void spapr_numa_FORM2_write_rtas_tables(SpaprMachineState *spapr,
                                                void *fdt, int rtas)
 {
     MachineState *ms = MACHINE(spapr);
-    NodeInfo *numa_info = ms->numa_state->nodes;
     int nb_numa_nodes = ms->numa_state->num_nodes;
     int distance_table_entries = nb_numa_nodes * nb_numa_nodes;
     g_autofree uint32_t *lookup_index_table = NULL;
@@ -540,18 +561,7 @@ static void spapr_numa_FORM2_write_rtas_tables(SpaprMachineState *spapr,
 
     for (src = 0; src < nb_numa_nodes; src++) {
         for (dst = 0; dst < nb_numa_nodes; dst++) {
-            /*
-             * We need to be explicit with the local distance
-             * value to cover the case where the user didn't added any
-             * NUMA nodes, but QEMU adds the default NUMA node without
-             * adding the numa_info to retrieve distance info from.
-             */
-            if (src == dst) {
-                distance_table[i++] = NUMA_DISTANCE_MIN;
-                continue;
-            }
-
-            distance_table[i++] = numa_info[src].distance[dst];
+            distance_table[i++] = get_numa_distance(ms, src, dst);
         }
     }
 

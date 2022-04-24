@@ -243,6 +243,7 @@ class QAPISchemaType(QAPISchemaEntity):
             'number':  'QTYPE_QNUM',
             'int':     'QTYPE_QNUM',
             'boolean': 'QTYPE_QBOOL',
+            'array':   'QTYPE_QLIST',
             'object':  'QTYPE_QDICT'
         }
         return json2qtype.get(self.json_type())
@@ -254,9 +255,11 @@ class QAPISchemaType(QAPISchemaEntity):
 
     def check(self, schema):
         QAPISchemaEntity.check(self, schema)
-        if 'deprecated' in [f.name for f in self.features]:
-            raise QAPISemError(
-                self.info, "feature 'deprecated' is not supported for types")
+        for feat in self.features:
+            if feat.is_special():
+                raise QAPISemError(
+                    self.info,
+                    f"feature '{feat.name}' is not supported for types")
 
     def describe(self):
         assert self.meta
@@ -708,9 +711,25 @@ class QAPISchemaMember:
 class QAPISchemaEnumMember(QAPISchemaMember):
     role = 'value'
 
+    def __init__(self, name, info, ifcond=None, features=None):
+        super().__init__(name, info, ifcond)
+        for f in features or []:
+            assert isinstance(f, QAPISchemaFeature)
+            f.set_defined_in(name)
+        self.features = features or []
+
+    def connect_doc(self, doc):
+        super().connect_doc(doc)
+        if doc:
+            for f in self.features:
+                doc.connect_feature(f)
+
 
 class QAPISchemaFeature(QAPISchemaMember):
     role = 'feature'
+
+    def is_special(self):
+        return self.name in ('deprecated', 'unstable')
 
 
 class QAPISchemaObjectTypeMember(QAPISchemaMember):
@@ -980,9 +999,14 @@ class QAPISchema:
                                   QAPISchemaIfCond(f.get('if')))
                 for f in features]
 
+    def _make_enum_member(self, name, ifcond, features, info):
+        return QAPISchemaEnumMember(name, info,
+                                    QAPISchemaIfCond(ifcond),
+                                    self._make_features(features, info))
+
     def _make_enum_members(self, values, info):
-        return [QAPISchemaEnumMember(v['name'], info,
-                                     QAPISchemaIfCond(v.get('if')))
+        return [self._make_enum_member(v['name'], v.get('if'),
+                                       v.get('features'), info)
                 for v in values]
 
     def _make_array_type(self, element_type, info):
@@ -1046,6 +1070,9 @@ class QAPISchema:
             None))
 
     def _make_variant(self, case, typ, ifcond, info):
+        if isinstance(typ, list):
+            assert len(typ) == 1
+            typ = self._make_array_type(typ[0], info)
         return QAPISchemaVariant(case, info, typ, ifcond)
 
     def _def_union_type(self, expr, info, doc):

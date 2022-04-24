@@ -382,18 +382,14 @@ static void gen_jump_slot(DisasContext *dc, TCGv dest, int slot)
     if (dc->icount) {
         tcg_gen_mov_i32(cpu_SR[ICOUNT], dc->next_icount);
     }
-    if (dc->base.singlestep_enabled) {
-        gen_exception(dc, EXCP_DEBUG);
+    if (dc->op_flags & XTENSA_OP_POSTPROCESS) {
+        slot = gen_postprocess(dc, slot);
+    }
+    if (slot >= 0) {
+        tcg_gen_goto_tb(slot);
+        tcg_gen_exit_tb(dc->base.tb, slot);
     } else {
-        if (dc->op_flags & XTENSA_OP_POSTPROCESS) {
-            slot = gen_postprocess(dc, slot);
-        }
-        if (slot >= 0) {
-            tcg_gen_goto_tb(slot);
-            tcg_gen_exit_tb(dc->base.tb, slot);
-        } else {
-            tcg_gen_exit_tb(NULL, 0);
-        }
+        tcg_gen_exit_tb(NULL, 0);
     }
     dc->base.is_jmp = DISAS_NORETURN;
 }
@@ -1293,22 +1289,18 @@ static void xtensa_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
     case DISAS_NORETURN:
         break;
     case DISAS_TOO_MANY:
-        if (dc->base.singlestep_enabled) {
-            tcg_gen_movi_i32(cpu_pc, dc->pc);
-            gen_exception(dc, EXCP_DEBUG);
-        } else {
-            gen_jumpi(dc, dc->pc, 0);
-        }
+        gen_jumpi(dc, dc->pc, 0);
         break;
     default:
         g_assert_not_reached();
     }
 }
 
-static void xtensa_tr_disas_log(const DisasContextBase *dcbase, CPUState *cpu)
+static void xtensa_tr_disas_log(const DisasContextBase *dcbase,
+                                CPUState *cpu, FILE *logfile)
 {
-    qemu_log("IN: %s\n", lookup_symbol(dcbase->pc_first));
-    log_target_disas(cpu, dcbase->pc_first, dcbase->tb->size);
+    fprintf(logfile, "IN: %s\n", lookup_symbol(dcbase->pc_first));
+    target_disas(logfile, cpu, dcbase->pc_first, dcbase->tb->size);
 }
 
 static const TranslatorOps xtensa_translator_ops = {
@@ -1480,14 +1472,14 @@ static void translate_b(DisasContext *dc, const OpcodeArg arg[],
 static void translate_bb(DisasContext *dc, const OpcodeArg arg[],
                          const uint32_t par[])
 {
-#ifdef TARGET_WORDS_BIGENDIAN
+#if TARGET_BIG_ENDIAN
     TCGv_i32 bit = tcg_const_i32(0x80000000u);
 #else
     TCGv_i32 bit = tcg_const_i32(0x00000001u);
 #endif
     TCGv_i32 tmp = tcg_temp_new_i32();
     tcg_gen_andi_i32(tmp, arg[1].in, 0x1f);
-#ifdef TARGET_WORDS_BIGENDIAN
+#if TARGET_BIG_ENDIAN
     tcg_gen_shr_i32(bit, bit, tmp);
 #else
     tcg_gen_shl_i32(bit, bit, tmp);
@@ -1502,7 +1494,7 @@ static void translate_bbi(DisasContext *dc, const OpcodeArg arg[],
                           const uint32_t par[])
 {
     TCGv_i32 tmp = tcg_temp_new_i32();
-#ifdef TARGET_WORDS_BIGENDIAN
+#if TARGET_BIG_ENDIAN
     tcg_gen_andi_i32(tmp, arg[0].in, 0x80000000u >> arg[1].imm);
 #else
     tcg_gen_andi_i32(tmp, arg[0].in, 0x00000001u << arg[1].imm);
@@ -7086,7 +7078,7 @@ static void translate_ldsti_d(DisasContext *dc, const OpcodeArg arg[],
     } else {
         addr = arg[1].in;
     }
-    mop = gen_load_store_alignment(dc, MO_TEQ, addr);
+    mop = gen_load_store_alignment(dc, MO_TEUQ, addr);
     if (par[0]) {
         tcg_gen_qemu_st_i64(arg[0].in, addr, dc->cring, mop);
     } else {
@@ -7151,7 +7143,7 @@ static void translate_ldstx_d(DisasContext *dc, const OpcodeArg arg[],
     } else {
         addr = arg[1].in;
     }
-    mop = gen_load_store_alignment(dc, MO_TEQ, addr);
+    mop = gen_load_store_alignment(dc, MO_TEUQ, addr);
     if (par[0]) {
         tcg_gen_qemu_st_i64(arg[0].in, addr, dc->cring, mop);
     } else {

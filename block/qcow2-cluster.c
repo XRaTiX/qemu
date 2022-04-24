@@ -28,6 +28,7 @@
 #include "qapi/error.h"
 #include "qcow2.h"
 #include "qemu/bswap.h"
+#include "qemu/memalign.h"
 #include "trace.h"
 
 int qcow2_shrink_l1_table(BlockDriverState *bs, uint64_t exact_size)
@@ -513,7 +514,8 @@ static int coroutine_fn do_perform_cow_read(BlockDriverState *bs,
      */
     assert(src_cluster_offset <= INT64_MAX);
     assert(src_cluster_offset + offset_in_cluster <= INT64_MAX);
-    assert(qiov->size <= INT64_MAX);
+    /* Cast qiov->size to uint64_t to silence a compiler warning on -m32 */
+    assert((uint64_t)qiov->size <= INT64_MAX);
     bdrv_check_qiov_request(src_cluster_offset + offset_in_cluster, qiov->size,
                             qiov, 0, &error_abort);
     /*

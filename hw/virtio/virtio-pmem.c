@@ -13,7 +13,6 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "hw/virtio/virtio-pmem.h"
@@ -182,7 +181,7 @@ static void virtio_pmem_class_init(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
-static TypeInfo virtio_pmem_info = {
+static const TypeInfo virtio_pmem_info = {
     .name          = TYPE_VIRTIO_PMEM,
     .parent        = TYPE_VIRTIO_DEVICE,
     .class_size    = sizeof(VirtIOPMEMClass),

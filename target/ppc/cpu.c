@@ -27,7 +27,7 @@
 #include "helper_regs.h"
 #include "sysemu/tcg.h"
 
-target_ulong cpu_read_xer(CPUPPCState *env)
+target_ulong cpu_read_xer(const CPUPPCState *env)
 {
     if (is_isa300(env)) {
         return env->xer | (env->so << XER_SO) |
@@ -112,7 +112,7 @@ static inline void fpscr_set_rounding_mode(CPUPPCState *env)
 
 void ppc_store_fpscr(CPUPPCState *env, target_ulong val)
 {
-    val &= ~(FP_VX | FP_FEX);
+    val &= FPSCR_MTFS_MASK;
     if (val & FPSCR_IX) {
         val |= FP_VX;
     }

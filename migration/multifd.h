@@ -42,7 +42,8 @@ typedef struct {
     uint32_t flags;
     /* maximum number of allocated pages */
     uint32_t pages_alloc;
-    uint32_t pages_used;
+    /* non zero pages */
+    uint32_t normal_pages;
     /* size of the next packet that contains pages */
     uint32_t next_packet_size;
     uint64_t packet_num;
@@ -53,15 +54,13 @@ typedef struct {
 
 typedef struct {
     /* number of used pages */
-    uint32_t used;
+    uint32_t num;
     /* number of allocated pages */
     uint32_t allocated;
     /* global number of generated multifd packets */
     uint64_t packet_num;
     /* offset of each page */
     ram_addr_t *offset;
-    /* pointer to each page */
-    struct iovec *iov;
     RAMBlock *block;
 } MultiFDPages_t;
 
@@ -71,8 +70,6 @@ typedef struct {
     uint8_t id;
     /* channel thread name */
     char *name;
-    /* tls hostname */
-    char *tls_hostname;
     /* channel thread id */
     QemuThread thread;
     /* communication channel */
@@ -85,6 +82,8 @@ typedef struct {
     bool running;
     /* should this thread finish */
     bool quit;
+    /* is the yank function registered */
+    bool registered_yank;
     /* thread has work to do */
     int pending_job;
     /* array of pages to sent */
@@ -102,10 +101,18 @@ typedef struct {
     /* thread local variables */
     /* packets sent through this channel */
     uint64_t num_packets;
-    /* pages sent through this channel */
-    uint64_t num_pages;
+    /* non zero pages sent through this channel */
+    uint64_t total_normal_pages;
     /* syncs main thread and channels */
     QemuSemaphore sem_sync;
+    /* buffers to send */
+    struct iovec *iov;
+    /* number of iovs used */
+    uint32_t iovs_num;
+    /* Pages that are not zero */
+    ram_addr_t *normal;
+    /* num of non zero pages */
+    uint32_t normal_num;
     /* used for compression methods */
     void *data;
 }  MultiFDSendParams;
@@ -126,8 +133,8 @@ typedef struct {
     bool running;
     /* should this thread finish */
     bool quit;
-    /* array of pages to receive */
-    MultiFDPages_t *pages;
+    /* ramblock host address */
+    uint8_t *host;
     /* packet allocated len */
     uint32_t packet_len;
     /* pointer to the packet */
@@ -141,10 +148,16 @@ typedef struct {
     uint32_t next_packet_size;
     /* packets sent through this channel */
     uint64_t num_packets;
-    /* pages sent through this channel */
-    uint64_t num_pages;
+    /* non zero pages recv through this channel */
+    uint64_t total_normal_pages;
     /* syncs main thread and channels */
     QemuSemaphore sem_sync;
+    /* buffers to recv */
+    struct iovec *iov;
+    /* Pages that are not zero */
+    ram_addr_t *normal;
+    /* num of non zero pages */
+    uint32_t normal_num;
     /* used for de-compression methods */
     void *data;
 } MultiFDRecvParams;
@@ -155,15 +168,13 @@ typedef struct {
     /* Cleanup for sending side */
     void (*send_cleanup)(MultiFDSendParams *p, Error **errp);
     /* Prepare the send packet */
-    int (*send_prepare)(MultiFDSendParams *p, uint32_t used, Error **errp);
-    /* Write the send packet */
-    int (*send_write)(MultiFDSendParams *p, uint32_t used, Error **errp);
+    int (*send_prepare)(MultiFDSendParams *p, Error **errp);
     /* Setup for receiving side */
     int (*recv_setup)(MultiFDRecvParams *p, Error **errp);
     /* Cleanup for receiving side */
     void (*recv_cleanup)(MultiFDRecvParams *p);
     /* Read all pages */
-    int (*recv_pages)(MultiFDRecvParams *p, uint32_t used, Error **errp);
+    int (*recv_pages)(MultiFDRecvParams *p, Error **errp);
 } MultiFDMethods;
 
 void multifd_register_ops(int method, MultiFDMethods *ops);

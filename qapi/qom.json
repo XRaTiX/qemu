@@ -559,10 +559,8 @@
 #                                        for ramblock-id. Disable this for 4.0
 #                                        machine types or older to allow
 #                                        migration with newer QEMU versions.
-#                                        This option is considered stable
-#                                        despite the x- prefix. (default:
-#                                        false generally, but true for machine
-#                                        types <= 4.0)
+#                                        (default: false generally,
+#                                        but true for machine types <= 4.0)
 #
 # Note: prealloc=true and reserve=false cannot be set at the same time. With
 #       reserve=true, the behavior depends on the operating system: for example,
@@ -771,6 +769,10 @@
 # @reduced-phys-bits: number of bits in physical addresses that become
 #                     unavailable when SEV is enabled
 #
+# @kernel-hashes: if true, add hashes of kernel/initrd/cmdline to a
+#                 designated guest firmware page for measured boot
+#                 with -kernel (default: false) (since 6.2)
+#
 # Since: 2.12
 ##
 { 'struct': 'SevGuestProperties',
@@ -780,10 +782,14 @@
             '*policy': 'uint32',
             '*handle': 'uint32',
             '*cbitpos': 'uint32',
-            'reduced-phys-bits': 'uint32' } }
+            'reduced-phys-bits': 'uint32',
+            '*kernel-hashes': 'bool' } }
 
 ##
 # @ObjectType:
+#
+# Features:
+# @unstable: Member @x-remote-object is experimental.
 #
 # Since: 6.0
 ##
@@ -794,7 +800,8 @@
     'authz-pam',
     'authz-simple',
     'can-bus',
-    'can-host-socketcan',
+    { 'name': 'can-host-socketcan',
+      'if': 'CONFIG_LINUX' },
     'colo-compare',
     'cryptodev-backend',
     'cryptodev-backend-builtin',
@@ -808,21 +815,26 @@
     'filter-replay',
     'filter-rewriter',
     'input-barrier',
-    'input-linux',
+    { 'name': 'input-linux',
+      'if': 'CONFIG_LINUX' },
     'iothread',
+    { 'name': 'memory-backend-epc',
+      'if': 'CONFIG_LINUX' },
     'memory-backend-file',
     { 'name': 'memory-backend-memfd',
       'if': 'CONFIG_LINUX' },
     'memory-backend-ram',
-    'memory-backend-epc',
     'pef-guest',
-    'pr-manager-helper',
+    { 'name': 'pr-manager-helper',
+      'if': 'CONFIG_LINUX' },
     'qtest',
     'rng-builtin',
     'rng-egd',
-    'rng-random',
+    { 'name': 'rng-random',
+      'if': 'CONFIG_POSIX' },
     'secret',
-    'secret_keyring',
+    { 'name': 'secret_keyring',
+      'if': 'CONFIG_SECRET_KEYRING' },
     'sev-guest',
     's390-pv-guest',
     'throttle-group',
@@ -830,7 +842,7 @@
     'tls-creds-psk',
     'tls-creds-x509',
     'tls-cipher-suites',
-    'x-remote-object'
+    { 'name': 'x-remote-object', 'features': [ 'unstable' ] }
   ] }
 
 ##
@@ -853,7 +865,8 @@
       'authz-listfile':             'AuthZListFileProperties',
       'authz-pam':                  'AuthZPAMProperties',
       'authz-simple':               'AuthZSimpleProperties',
-      'can-host-socketcan':         'CanHostSocketcanProperties',
+      'can-host-socketcan':         { 'type': 'CanHostSocketcanProperties',
+                                      'if': 'CONFIG_LINUX' },
       'colo-compare':               'ColoCompareProperties',
       'cryptodev-backend':          'CryptodevBackendProperties',
       'cryptodev-backend-builtin':  'CryptodevBackendProperties',
@@ -867,20 +880,25 @@
       'filter-replay':              'NetfilterProperties',
       'filter-rewriter':            'FilterRewriterProperties',
       'input-barrier':              'InputBarrierProperties',
-      'input-linux':                'InputLinuxProperties',
+      'input-linux':                { 'type': 'InputLinuxProperties',
+                                      'if': 'CONFIG_LINUX' },
       'iothread':                   'IothreadProperties',
+      'memory-backend-epc':         { 'type': 'MemoryBackendEpcProperties',
+                                      'if': 'CONFIG_LINUX' },
       'memory-backend-file':        'MemoryBackendFileProperties',
       'memory-backend-memfd':       { 'type': 'MemoryBackendMemfdProperties',
                                       'if': 'CONFIG_LINUX' },
       'memory-backend-ram':         'MemoryBackendProperties',
-      'memory-backend-epc':         'MemoryBackendEpcProperties',
-      'pr-manager-helper':          'PrManagerHelperProperties',
+      'pr-manager-helper':          { 'type': 'PrManagerHelperProperties',
+                                      'if': 'CONFIG_LINUX' },
       'qtest':                      'QtestProperties',
       'rng-builtin':                'RngProperties',
       'rng-egd':                    'RngEgdProperties',
-      'rng-random':                 'RngRandomProperties',
+      'rng-random':                 { 'type': 'RngRandomProperties',
+                                      'if': 'CONFIG_POSIX' },
       'secret':                     'SecretProperties',
-      'secret_keyring':             'SecretKeyringProperties',
+      'secret_keyring':             { 'type': 'SecretKeyringProperties',
+                                      'if': 'CONFIG_SECRET_KEYRING' },
       'sev-guest':                  'SevGuestProperties',
       'throttle-group':             'ThrottleGroupProperties',
       'tls-creds-anon':             'TlsCredsAnonProperties',

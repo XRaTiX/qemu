@@ -195,7 +195,7 @@ The enlightenment allows to use Hyper-V SynIC with hardware APICv/AVIC enabled.
 Normally, Hyper-V SynIC disables these hardware feature and suggests the guest
 to use paravirtualized AutoEOI feature.
 Note: enabling this feature on old hardware (without APICv/AVIC support) may
-have negative effect on guest's performace.
+have negative effect on guest's performance.
 
 3.19. hv-no-nonarch-coresharing=on/off/auto
 ===========================================
@@ -224,6 +224,21 @@ default (WS2016).
 
 Note: hv-version-id-* are not enlightenments and thus don't enable Hyper-V
 identification when specified without any other enlightenments.
+
+3.21. hv-syndbg
+===============
+Enables Hyper-V synthetic debugger interface, this is a special interface used
+by Windows Kernel debugger to send the packets through, rather than sending
+them via serial/network .
+When enabled, this enlightenment provides additional communication facilities
+to the guest: SynDbg messages.
+This new communication is used by Windows Kernel debugger rather than sending
+packets via serial/network, adding significant performance boost over the other
+comm channels.
+This enlightenment requires a VMBus device (-device vmbus-bridge,irq=15)
+and the follow enlightenments to work:
+hv-relaxed,hv_time,hv-vapic,hv-vpindex,hv-synic,hv-runtime,hv-stimer
+
 
 4. Supplementary features
 =========================

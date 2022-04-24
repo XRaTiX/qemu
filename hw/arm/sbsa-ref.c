@@ -18,7 +18,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
@@ -670,7 +669,7 @@ static void sbsa_ref_init(MachineState *machine)
     int n, sbsa_max_cpus;
 
     if (!cpu_type_valid(machine->cpu_type)) {
-        error_report("mach-virt: CPU type %s not supported", machine->cpu_type);
+        error_report("sbsa-ref: CPU type %s not supported", machine->cpu_type);
         exit(1);
     }
 
@@ -777,7 +776,6 @@ static void sbsa_ref_init(MachineState *machine)
     create_secure_ec(secure_sysmem);
 
     sms->bootinfo.ram_size = machine->ram_size;
-    sms->bootinfo.nb_cpus = smp_cpus;
     sms->bootinfo.board_id = -1;
     sms->bootinfo.loader_start = sbsa_ref_memmap[SBSA_MEM].base;
     sms->bootinfo.get_dtb = sbsa_ref_dtb;

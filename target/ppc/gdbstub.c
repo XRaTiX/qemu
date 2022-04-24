@@ -87,9 +87,9 @@ static int ppc_gdb_register_len(int n)
 /*
  * We need to present the registers to gdb in the "current" memory
  * ordering.  For user-only mode we get this for free;
- * TARGET_WORDS_BIGENDIAN is set to the proper ordering for the
+ * TARGET_BIG_ENDIAN is set to the proper ordering for the
  * binary, and cannot be changed.  For system mode,
- * TARGET_WORDS_BIGENDIAN is always set, and we must check the current
+ * TARGET_BIG_ENDIAN is always set, and we must check the current
  * mode of the chip to see if we're running in little-endian.
  */
 void ppc_maybe_bswap_register(CPUPPCState *env, uint8_t *mem_buf, int len)
@@ -159,7 +159,7 @@ int ppc_cpu_gdb_read_register(CPUState *cs, GByteArray *buf, int n)
             gdb_get_regl(buf, env->ctr);
             break;
         case 69:
-            gdb_get_reg32(buf, env->xer);
+            gdb_get_reg32(buf, cpu_read_xer(env));
             break;
         case 70:
             gdb_get_reg32(buf, env->fpscr);
@@ -217,7 +217,7 @@ int ppc_cpu_gdb_read_register_apple(CPUState *cs, GByteArray *buf, int n)
             gdb_get_reg64(buf, env->ctr);
             break;
         case 69 + 32:
-            gdb_get_reg32(buf, env->xer);
+            gdb_get_reg32(buf, cpu_read_xer(env));
             break;
         case 70 + 32:
             gdb_get_reg64(buf, env->fpscr);
@@ -269,7 +269,7 @@ int ppc_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
             env->ctr = ldtul_p(mem_buf);
             break;
         case 69:
-            env->xer = ldl_p(mem_buf);
+            cpu_write_xer(env, ldl_p(mem_buf));
             break;
         case 70:
             /* fpscr */
@@ -319,7 +319,7 @@ int ppc_cpu_gdb_write_register_apple(CPUState *cs, uint8_t *mem_buf, int n)
             env->ctr = ldq_p(mem_buf);
             break;
         case 69 + 32:
-            env->xer = ldl_p(mem_buf);
+            cpu_write_xer(env, ldl_p(mem_buf));
             break;
         case 70 + 32:
             /* fpscr */

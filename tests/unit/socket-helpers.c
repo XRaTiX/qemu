@@ -19,7 +19,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/sockets.h"
 #include "socket-helpers.h"
 
@@ -105,7 +104,7 @@ static int socket_can_bind_connect(const char *hostname, int family)
     }
 
     if (check_soerr) {
-        if (qemu_getsockopt(cfd, SOL_SOCKET, SO_ERROR, &soerr, &soerrlen) < 0) {
+        if (getsockopt(cfd, SOL_SOCKET, SO_ERROR, &soerr, &soerrlen) < 0) {
             goto cleanup;
         }
         if (soerr) {

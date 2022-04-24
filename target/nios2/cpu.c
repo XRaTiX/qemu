@@ -46,11 +46,6 @@ static void nios2_cpu_reset(DeviceState *dev)
     Nios2CPUClass *ncc = NIOS2_CPU_GET_CLASS(cpu);
     CPUNios2State *env = &cpu->env;
 
-    if (qemu_loglevel_mask(CPU_LOG_RESET)) {
-        qemu_log("CPU Reset (CPU %d)\n", cs->cpu_index);
-        log_cpu_state(cs, 0);
-    }
-
     ncc->parent_reset(dev);
 
     memset(env->regs, 0, sizeof(uint32_t) * NUM_CORE_REGS);
@@ -73,12 +68,9 @@ static void nios2_cpu_set_irq(void *opaque, int irq, int level)
 
     env->regs[CR_IPENDING] = deposit32(env->regs[CR_IPENDING], irq, 1, !!level);
 
-    env->irq_pending = env->regs[CR_IPENDING] & env->regs[CR_IENABLE];
-
-    if (env->irq_pending && (env->regs[CR_STATUS] & CR_STATUS_PIE)) {
-        env->irq_pending = 0;
+    if (env->regs[CR_IPENDING]) {
         cpu_interrupt(cs, CPU_INTERRUPT_HARD);
-    } else if (!env->irq_pending) {
+    } else {
         cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
     }
 }
@@ -134,7 +126,8 @@ static bool nios2_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     CPUNios2State *env = &cpu->env;
 
     if ((interrupt_request & CPU_INTERRUPT_HARD) &&
-        (env->regs[CR_STATUS] & CR_STATUS_PIE)) {
+        (env->regs[CR_STATUS] & CR_STATUS_PIE) &&
+        (env->regs[CR_IPENDING] & env->regs[CR_IENABLE])) {
         cs->exception_index = EXCP_IRQ;
         nios2_cpu_do_interrupt(cs);
         return true;
@@ -147,11 +140,7 @@ static void nios2_cpu_disas_set_info(CPUState *cpu, disassemble_info *info)
 {
     /* NOTE: NiosII R2 is not supported yet. */
     info->mach = bfd_arch_nios2;
-#ifdef TARGET_WORDS_BIGENDIAN
-    info->print_insn = print_insn_big_nios2;
-#else
-    info->print_insn = print_insn_little_nios2;
-#endif
+    info->print_insn = print_insn_nios2;
 }
 
 static int nios2_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
@@ -220,9 +209,11 @@ static const struct SysemuCPUOps nios2_sysemu_ops = {
 
 static const struct TCGCPUOps nios2_tcg_ops = {
     .initialize = nios2_tcg_init,
-    .tlb_fill = nios2_cpu_tlb_fill,
 
-#ifndef CONFIG_USER_ONLY
+#ifdef CONFIG_USER_ONLY
+    .record_sigsegv = nios2_cpu_record_sigsegv,
+#else
+    .tlb_fill = nios2_cpu_tlb_fill,
     .cpu_exec_interrupt = nios2_cpu_exec_interrupt,
     .do_interrupt = nios2_cpu_do_interrupt,
     .do_unaligned_access = nios2_cpu_do_unaligned_access,

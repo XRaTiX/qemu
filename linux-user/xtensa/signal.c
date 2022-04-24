@@ -130,7 +130,7 @@ static int setup_sigcontext(struct target_rt_sigframe *frame,
 
 static void install_sigtramp(uint8_t *tramp)
 {
-#ifdef TARGET_WORDS_BIGENDIAN
+#if TARGET_BIG_ENDIAN
     /* Generate instruction:  MOVI a2, __NR_rt_sigreturn */
     __put_user(0x22, &tramp[0]);
     __put_user(0x0a, &tramp[1]);
@@ -263,12 +263,12 @@ long do_rt_sigreturn(CPUXtensaState *env)
     target_restore_altstack(&frame->uc.tuc_stack, env);
 
     unlock_user_struct(frame, frame_addr, 0);
-    return -TARGET_QEMU_ESIGRETURN;
+    return -QEMU_ESIGRETURN;
 
 badframe:
     unlock_user_struct(frame, frame_addr, 0);
     force_sig(TARGET_SIGSEGV);
-    return -TARGET_QEMU_ESIGRETURN;
+    return -QEMU_ESIGRETURN;
 }
 
 void setup_sigtramp(abi_ulong sigtramp_page)
