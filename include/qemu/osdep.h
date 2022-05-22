@@ -75,7 +75,7 @@ QEMU_EXTERN_C int daemon(int, int);
 #ifdef _WIN32
 /* as defined in sdkddkver.h */
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600 /* Vista */
+#define _WIN32_WINNT 0x0601 /* Windows 7 API (should be in sync with glib) */
 #endif
 /* reduces the number of implicitly included headers */
 #ifndef WIN32_LEAN_AND_MEAN
@@ -547,14 +547,7 @@ static inline void qemu_timersub(const struct timeval *val1,
 ssize_t qemu_write_full(int fd, const void *buf, size_t count)
     G_GNUC_WARN_UNUSED_RESULT;
 
-#ifndef _WIN32
-int qemu_pipe(int pipefd[2]);
-#endif
-
 void qemu_set_cloexec(int fd);
-
-void fips_set_state(bool requested);
-bool fips_get_state(void);
 
 /* Return a dynamically allocated directory path that is appropriate for storing
  * local state.

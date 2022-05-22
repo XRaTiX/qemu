@@ -202,9 +202,9 @@ ERST
 
     {
         .name       = "change",
-        .args_type  = "device:B,target:F,arg:s?,read-only-mode:s?",
-        .params     = "device filename [format [read-only-mode]]",
-        .help       = "change a removable medium, optional format",
+        .args_type  = "device:B,force:-f,target:F,arg:s?,read-only-mode:s?",
+        .params     = "device [-f] filename [format [read-only-mode]]",
+        .help       = "change a removable medium, optional format, use -f to force the operation",
         .cmd        = hmp_change,
     },
 
@@ -212,10 +212,13 @@ SRST
 ``change`` *device* *setting*
   Change the configuration of a device.
 
-  ``change`` *diskdevice* *filename* [*format* [*read-only-mode*]]
+  ``change`` *diskdevice* [-f] *filename* [*format* [*read-only-mode*]]
     Change the medium for a removable disk device to point to *filename*. eg::
 
       (qemu) change ide1-cd0 /path/to/some.iso
+
+    ``-f``
+      forces the operation even if the guest has locked the tray.
 
     *format* is optional.
 
@@ -244,11 +247,12 @@ ERST
 
     {
         .name       = "screendump",
-        .args_type  = "filename:F,device:s?,head:i?",
-        .params     = "filename [device [head]]",
-        .help       = "save screen from head 'head' of display device 'device' "
-                      "into PPM image 'filename'",
-        .cmd        = hmp_screendump,
+        .args_type  = "filename:F,format:-fs,device:s?,head:i?",
+        .params     = "filename [-f format] [device [head]]",
+        .help       = "save screen from head 'head' of display device 'device'"
+                      "in specified format 'format' as image 'filename'."
+                      "Currently only 'png' and 'ppm' formats are supported.",
+         .cmd        = hmp_screendump,
         .coroutine  = true,
     },
 
@@ -1265,7 +1269,11 @@ ERST
     {
         .name       = "netdev_add",
         .args_type  = "netdev:O",
-        .params     = "[user|tap|socket|vde|bridge|hubport|netmap|vhost-user],id=str[,prop=value][,...]",
+        .params     = "[user|tap|socket|vde|bridge|hubport|netmap|vhost-user"
+#ifdef CONFIG_VMNET
+                      "|vmnet-host|vmnet-shared|vmnet-bridged"
+#endif
+                      "],id=str[,prop=value][,...]",
         .help       = "add host network device",
         .cmd        = hmp_netdev_add,
         .command_completion = netdev_add_completion,

@@ -22,8 +22,8 @@
  * THE SOFTWARE.
  */
 
-#ifndef BLOCK_COROUTINES_INT_H
-#define BLOCK_COROUTINES_INT_H
+#ifndef BLOCK_COROUTINES_H
+#define BLOCK_COROUTINES_H
 
 #include "block/block_int.h"
 
@@ -59,7 +59,8 @@ int coroutine_fn bdrv_co_writev_vmstate(BlockDriverState *bs,
                                         QEMUIOVector *qiov, int64_t pos);
 
 int coroutine_fn
-nbd_co_do_establish_connection(BlockDriverState *bs, Error **errp);
+nbd_co_do_establish_connection(BlockDriverState *bs, bool blocking,
+                               Error **errp);
 
 
 int coroutine_fn
@@ -109,7 +110,7 @@ bdrv_common_block_status_above(BlockDriverState *bs,
                                BlockDriverState **file,
                                int *depth);
 int generated_co_wrapper
-nbd_do_establish_connection(BlockDriverState *bs, Error **errp);
+nbd_do_establish_connection(BlockDriverState *bs, bool blocking, Error **errp);
 
 int generated_co_wrapper
 blk_do_preadv(BlockBackend *blk, int64_t offset, int64_t bytes,
@@ -128,4 +129,4 @@ blk_do_pdiscard(BlockBackend *blk, int64_t offset, int64_t bytes);
 
 int generated_co_wrapper blk_do_flush(BlockBackend *blk);
 
-#endif /* BLOCK_COROUTINES_INT_H */
+#endif /* BLOCK_COROUTINES_H */
