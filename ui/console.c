@@ -160,7 +160,6 @@ static void gui_update(void *opaque)
     uint64_t dcl_interval;
     DisplayState *ds = opaque;
     DisplayChangeListener *dcl;
-    QemuConsole *con;
 
     ds->refreshing = true;
     dpy_refresh(ds);
@@ -175,11 +174,6 @@ static void gui_update(void *opaque)
     }
     if (ds->update_interval != interval) {
         ds->update_interval = interval;
-        QTAILQ_FOREACH(con, &consoles, next) {
-            if (con->hw_ops->update_interval) {
-                con->hw_ops->update_interval(con->hw, interval);
-            }
-        }
         trace_console_refresh(interval);
     }
     ds->last_update = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
@@ -310,8 +304,8 @@ static bool png_save(int fd, pixman_image_t *image, Error **errp)
 {
     int width = pixman_image_get_width(image);
     int height = pixman_image_get_height(image);
-    g_autofree png_struct *png_ptr = NULL;
-    g_autofree png_info *info_ptr = NULL;
+    png_struct *png_ptr;
+    png_info *info_ptr;
     g_autoptr(pixman_image_t) linebuf =
                             qemu_pixman_linebuf_create(PIXMAN_a8r8g8b8, width);
     uint8_t *buf = (uint8_t *)pixman_image_get_data(linebuf);
@@ -352,7 +346,6 @@ static bool png_save(int fd, pixman_image_t *image, Error **errp)
         qemu_pixman_linebuf_fill(linebuf, image, width, 0, y);
         png_write_row(png_ptr, buf);
     }
-    qemu_pixman_image_unref(linebuf);
 
     png_write_end(png_ptr, NULL);
 
@@ -1374,6 +1367,7 @@ static const int qcode_to_keysym[Q_KEY_CODE__MAX] = {
     [Q_KEY_CODE_PGUP]   = QEMU_KEY_PAGEUP,
     [Q_KEY_CODE_PGDN]   = QEMU_KEY_PAGEDOWN,
     [Q_KEY_CODE_DELETE] = QEMU_KEY_DELETE,
+    [Q_KEY_CODE_TAB]    = QEMU_KEY_TAB,
     [Q_KEY_CODE_BACKSPACE] = QEMU_KEY_BACKSPACE,
 };
 
@@ -2319,11 +2313,50 @@ bool qemu_console_is_gl_blocked(QemuConsole *con)
     return con->gl_block;
 }
 
+bool qemu_console_is_multihead(DeviceState *dev)
+{
+    QemuConsole *con;
+    Object *obj;
+    uint32_t f = 0xffffffff;
+    uint32_t h;
+
+    QTAILQ_FOREACH(con, &consoles, next) {
+        obj = object_property_get_link(OBJECT(con),
+                                       "device", &error_abort);
+        if (DEVICE(obj) != dev) {
+            continue;
+        }
+
+        h = object_property_get_uint(OBJECT(con),
+                                     "head", &error_abort);
+        if (f == 0xffffffff) {
+            f = h;
+        } else if (h != f) {
+            return true;
+        }
+    }
+    return false;
+}
+
 char *qemu_console_get_label(QemuConsole *con)
 {
     if (con->console_type == GRAPHIC_CONSOLE) {
         if (con->device) {
-            return g_strdup(object_get_typename(con->device));
+            DeviceState *dev;
+            bool multihead;
+
+            dev = DEVICE(con->device);
+            multihead = qemu_console_is_multihead(dev);
+            if (multihead) {
+                return g_strdup_printf("%s.%d", dev->id ?
+                                       dev->id :
+                                       object_get_typename(con->device),
+                                       con->head);
+            } else {
+                return g_strdup_printf("%s", dev->id ?
+                                       dev->id :
+                                       object_get_typename(con->device));
+            }
         }
         return g_strdup("VGA");
     } else {
@@ -2542,11 +2575,13 @@ static void vc_chr_open(Chardev *chr,
 
 void qemu_console_resize(QemuConsole *s, int width, int height)
 {
-    DisplaySurface *surface;
+    DisplaySurface *surface = qemu_console_surface(s);
 
     assert(s->console_type == GRAPHIC_CONSOLE);
 
-    if (qemu_console_get_width(s, -1) == width &&
+    if ((s->scanout.kind != SCANOUT_SURFACE ||
+         (surface && surface->flags & QEMU_ALLOCATED_FLAG)) &&
+        qemu_console_get_width(s, -1) == width &&
         qemu_console_get_height(s, -1) == height) {
         return;
     }

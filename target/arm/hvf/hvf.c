@@ -17,6 +17,7 @@
 #include "sysemu/hvf_int.h"
 #include "sysemu/hw_accel.h"
 #include "hvf_arm.h"
+#include "cpregs.h"
 
 #include <mach/mach_time.h>
 
@@ -977,8 +978,8 @@ static int hvf_sysreg_write(CPUState *cpu, uint32_t reg, uint64_t val)
             }
         }
 
-        env->cp15.c9_pmcr &= ~PMCR_WRITEABLE_MASK;
-        env->cp15.c9_pmcr |= (val & PMCR_WRITEABLE_MASK);
+        env->cp15.c9_pmcr &= ~PMCR_WRITABLE_MASK;
+        env->cp15.c9_pmcr |= (val & PMCR_WRITABLE_MASK);
 
         pmu_op_finish(env);
         break;

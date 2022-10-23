@@ -17,6 +17,7 @@
 #include "qemu/osdep.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
+#include "qemu/guest-random.h"
 #include "qapi/error.h"
 #include "e500.h"
 #include "e500-ccsr.h"
@@ -47,7 +48,6 @@
 #include "hw/irq.h"
 
 #define EPAPR_MAGIC                (0x45504150)
-#define BINARY_DEVICE_TREE_FILE    "mpc8544ds.dtb"
 #define DTC_LOAD_PAD               0x1800000
 #define DTC_PAD_MASK               0xFFFFF
 #define DTB_MAX_SIZE               (8 * MiB)
@@ -347,6 +347,7 @@ static int ppce500_load_device_tree(PPCE500MachineState *pms,
         };
     const char *dtb_file = machine->dtb;
     const char *toplevel_compat = machine->dt_compatible;
+    uint8_t rng_seed[32];
 
     if (dtb_file) {
         char *filename;
@@ -403,6 +404,9 @@ static int ppce500_load_device_tree(PPCE500MachineState *pms,
                                       machine->kernel_cmdline);
     if (ret < 0)
         fprintf(stderr, "couldn't set /chosen/bootargs\n");
+
+    qemu_guest_getrandom_nofail(rng_seed, sizeof(rng_seed));
+    qemu_fdt_setprop(fdt, "/chosen", "rng-seed", rng_seed, sizeof(rng_seed));
 
     if (kvm_enabled()) {
         /* Read out host's frequencies */
@@ -862,7 +866,6 @@ void ppce500_init(MachineState *machine)
     for (i = 0; i < smp_cpus; i++) {
         PowerPCCPU *cpu;
         CPUState *cs;
-        qemu_irq *input;
 
         cpu = POWERPC_CPU(object_new(machine->cpu_type));
         env = &cpu->env;
@@ -886,9 +889,10 @@ void ppce500_init(MachineState *machine)
             firstenv = env;
         }
 
-        input = (qemu_irq *)env->irq_inputs;
-        irqs[i].irq[OPENPIC_OUTPUT_INT] = input[PPCE500_INPUT_INT];
-        irqs[i].irq[OPENPIC_OUTPUT_CINT] = input[PPCE500_INPUT_CINT];
+        irqs[i].irq[OPENPIC_OUTPUT_INT] =
+            qdev_get_gpio_in(DEVICE(cpu), PPCE500_INPUT_INT);
+        irqs[i].irq[OPENPIC_OUTPUT_CINT] =
+            qdev_get_gpio_in(DEVICE(cpu), PPCE500_INPUT_CINT);
         env->spr_cb[SPR_BOOKE_PIR].default_value = cs->cpu_index = i;
         env->mpic_iack = pmc->ccsrbar_base + MPC8544_MPIC_REGS_OFFSET + 0xa0;
 
@@ -1003,24 +1007,22 @@ void ppce500_init(MachineState *machine)
     }
 
     /* Platform Bus Device */
-    if (pmc->has_platform_bus) {
-        dev = qdev_new(TYPE_PLATFORM_BUS_DEVICE);
-        dev->id = g_strdup(TYPE_PLATFORM_BUS_DEVICE);
-        qdev_prop_set_uint32(dev, "num_irqs", pmc->platform_bus_num_irqs);
-        qdev_prop_set_uint32(dev, "mmio_size", pmc->platform_bus_size);
-        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-        pms->pbus_dev = PLATFORM_BUS_DEVICE(dev);
+    dev = qdev_new(TYPE_PLATFORM_BUS_DEVICE);
+    dev->id = g_strdup(TYPE_PLATFORM_BUS_DEVICE);
+    qdev_prop_set_uint32(dev, "num_irqs", pmc->platform_bus_num_irqs);
+    qdev_prop_set_uint32(dev, "mmio_size", pmc->platform_bus_size);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    pms->pbus_dev = PLATFORM_BUS_DEVICE(dev);
 
-        s = SYS_BUS_DEVICE(pms->pbus_dev);
-        for (i = 0; i < pmc->platform_bus_num_irqs; i++) {
-            int irqn = pmc->platform_bus_first_irq + i;
-            sysbus_connect_irq(s, i, qdev_get_gpio_in(mpicdev, irqn));
-        }
-
-        memory_region_add_subregion(address_space_mem,
-                                    pmc->platform_bus_base,
-                                    sysbus_mmio_get_region(s, 0));
+    s = SYS_BUS_DEVICE(pms->pbus_dev);
+    for (i = 0; i < pmc->platform_bus_num_irqs; i++) {
+        int irqn = pmc->platform_bus_first_irq + i;
+        sysbus_connect_irq(s, i, qdev_get_gpio_in(mpicdev, irqn));
     }
+
+    memory_region_add_subregion(address_space_mem,
+                                pmc->platform_bus_base,
+                                &pms->pbus_dev->mmio);
 
     /*
      * Smart firmware defaults ahead!

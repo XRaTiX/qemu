@@ -5,6 +5,9 @@
 #include "hw/virtio/virtio.h"
 #include "exec/memory.h"
 
+#define VHOST_F_DEVICE_IOTLB 63
+#define VHOST_USER_F_PROTOCOL_FEATURES 30
+
 /* Generic structures common for any vhost based device. */
 
 struct vhost_inflight {
@@ -29,6 +32,7 @@ struct vhost_virtqueue {
     unsigned long long used_phys;
     unsigned used_size;
     EventNotifier masked_notifier;
+    EventNotifier error_notifier;
     struct vhost_dev *dev;
 };
 
@@ -85,11 +89,15 @@ struct vhost_dev {
     /* if non-zero, minimum required value for max_queues */
     int num_queues;
     uint64_t features;
+    /** @acked_features: final set of negotiated features */
     uint64_t acked_features;
+    /** @backend_features: backend specific feature bits */
     uint64_t backend_features;
+    /** @protocol_features: final negotiated protocol features */
     uint64_t protocol_features;
     uint64_t max_queues;
     uint64_t backend_cap;
+    /* @started: is the vhost device started? */
     bool started;
     bool log_enabled;
     uint64_t log_size;
@@ -160,6 +168,17 @@ int vhost_dev_enable_notifiers(struct vhost_dev *hdev, VirtIODevice *vdev);
  * Disable direct notifications to vhost device.
  */
 void vhost_dev_disable_notifiers(struct vhost_dev *hdev, VirtIODevice *vdev);
+
+/**
+ * vhost_dev_is_started() - report status of vhost device
+ * @hdev: common vhost_dev structure
+ *
+ * Return the started status of the vhost device
+ */
+static inline bool vhost_dev_is_started(struct vhost_dev *hdev)
+{
+    return hdev->started;
+}
 
 /**
  * vhost_dev_start() - start the vhost device
@@ -246,8 +265,29 @@ bool vhost_virtqueue_pending(struct vhost_dev *hdev, int n);
  */
 void vhost_virtqueue_mask(struct vhost_dev *hdev, VirtIODevice *vdev, int n,
                           bool mask);
+
+/**
+ * vhost_get_features() - return a sanitised set of feature bits
+ * @hdev: common vhost_dev structure
+ * @feature_bits: pointer to terminated table of feature bits
+ * @features: original feature set
+ *
+ * This returns a set of features bits that is an intersection of what
+ * is supported by the vhost backend (hdev->features), the supported
+ * feature_bits and the requested feature set.
+ */
 uint64_t vhost_get_features(struct vhost_dev *hdev, const int *feature_bits,
                             uint64_t features);
+
+/**
+ * vhost_ack_features() - set vhost acked_features
+ * @hdev: common vhost_dev structure
+ * @feature_bits: pointer to terminated table of feature bits
+ * @features: requested feature set
+ *
+ * This sets the internal hdev->acked_features to the intersection of
+ * the backends advertised features and the supported feature_bits.
+ */
 void vhost_ack_features(struct vhost_dev *hdev, const int *feature_bits,
                         uint64_t features);
 bool vhost_has_free_slot(void);
